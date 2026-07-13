@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Upcoming Meetings - Context Thread Meeting Assistant</title>
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;700&amp;display=swap" rel="stylesheet"/>
+<!-- Material Symbols -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "primary": "#FF5E3A",
+                        "background": "#F4F4F2",
+                        "surface": "#FFFFFF",
+                        "text-main": "#1C1C1E",
+                        "muted": "#8E8E93",
+                        "accent": "#34C759"
+                    },
+                    fontFamily: {
+                        "heading": ["Plus Jakarta Sans", "sans-serif"],
+                        "body": ["Plus Jakarta Sans", "sans-serif"]
+                    },
+                    borderRadius: {
+                        "sm": "12px",
+                        "md": "24px",
+                        "lg": "32px",
+                        "full": "9999px"
+                    },
+                    boxShadow: {
+                        "diffused": "0 12px 32px rgba(255, 94, 58, 0.15)",
+                        "card": "0 4px 12px rgba(0, 0, 0, 0.05)"
+                    }
+                }
+            }
+        }
+    </script>
+<style>
+        body {
+            background-color: theme('colors.background');
+            color: theme('colors.text-main');
+            font-family: theme('fontFamily.body');
+            -webkit-font-smoothing: antialiased;
+        }
+        
+        h1, h2, h3, h4, h5, h6, .font-heading {
+            font-family: theme('fontFamily.heading');
+        }
+
+        .avatar-stack > img {
+            margin-left: -8px;
+            border: 2px solid white;
+        }
+        .avatar-stack > img:first-child {
+            margin-left: 0;
+        }
+
+        /* Hide scrollbar for cleaner mobile look */
+        ::-webkit-scrollbar {
+            display: none;
+        }
+    </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="relative min-h-screen w-full overflow-x-hidden flex flex-col pb-24">
+<!-- Header Section -->
+<header class="px-6 pt-12 pb-6 flex flex-col gap-2">
+<h1 class="font-heading font-bold text-[32px] leading-tight text-text-main">Good morning, Sarah</h1>
+<div class="flex items-center gap-2 mt-2">
+<div class="bg-black/5 rounded-full px-3 py-1 flex items-center gap-1.5 w-fit">
+<span class="material-symbols-outlined text-[14px] text-muted">sync</span>
+<span class="text-sm font-medium text-muted">Synced just now</span>
+</div>
+</div>
+</header>
+<!-- Content: Meeting List -->
+<main class="flex-1 px-4 space-y-4">
+<!-- Date Header -->
+<div class="px-2">
+<h2 class="text-lg font-bold text-text-main">Today, Oct 24</h2>
+</div>
+<!-- Meeting Card 1 -->
+<article class="bg-surface rounded-md p-5 shadow-card transition-transform active:scale-[0.98] cursor-pointer">
+<div class="flex justify-between items-start mb-4">
+<div>
+<h3 class="font-heading font-bold text-xl text-text-main mb-1">Design Sync</h3>
+<p class="text-sm font-medium text-muted flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]">schedule</span>
+                        10:00 AM - 11:00 AM
+                    </p>
+</div>
+<div class="bg-primary/10 text-primary rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wider">
+                    In 15m
+                </div>
+</div>
+<div class="flex justify-between items-end">
+<div class="flex avatar-stack">
+<img class="w-8 h-8 rounded-full object-cover" data-alt="A small circular avatar photo of a professional woman with dark hair against a light background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBiKrtAC3cfeVyK-spk5Lk7c4xBO26X5kpcmOi9FVqZ-Ez93L-znibIOEU2tttEoo93tcomOzgcYHAtmEUfT0UT7CUbkuocizO1e291BlGPKM0Vq5Pb2kOZT02DvM4S-3hue57vhH9sSouK_wlDZAuHyuhjKzxkW7JaMV1FcznYP0bRZNP8M2QvZyMQlNFZqGFVSXoGa-oyTdRVJ8NFwwk8bh23wi978QM0oyLp9uW3T4O0K2ezcJWxtzUB3pVVdkVwGKloIVFl2VA"/>
+<img class="w-8 h-8 rounded-full object-cover" data-alt="A small circular avatar photo of a young man with glasses smiling against a blue background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBbEm-tVyLoSeDwk9iTn8eDY-F99MuClDm33s9_8jNNkb55KSVi74a-QBL8ymYyA-97IfaH0Ei4bkMHVmSw2pLNNDYlSAERfMA6oJBf3I9hXPrZ05hHorGxNcaIhwJ901C_eYyUkU1wRSz6xIX7QxUhj0b8Ue3sAeTaQCipWC-Wo4o6yaunGkMdU9HXGV6piZEvEmrnKsOKoI85wr3lkriw8ZT_zFBARrtUSd4GN9y4Krf8SmwqXkW83qug03nnA4W2v4XYLes2VHE"/>
+<img class="w-8 h-8 rounded-full object-cover" data-alt="A small circular avatar photo of a professional person against a neutral grey background." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBtFXk56IS0pkpyImBHnRYyKt-cfBxxfyLYOPw0SoLZddJ6d1LSff-M94wW0_yDfF5b6Me9qoJaGkClJjwuAlZaTAYBh6oQKSTYBRiA4oIZF0DR9Mv_GU9Dxw7dma-xex-4NamN5m6Uut-OkapoPxb9cldc65iwioKouL9HzSmph3JEzXCYOqjNIdXGdNFp8gWIZoiXQ-biKXx9SAbL9_NrdlIVMk8tC_3cXeqoMlO5OK9AQgzuQtmM-RmB2koi_E_p4tamgu1VLl8"/>
+<div class="w-8 h-8 rounded-full bg-black/5 border-2 border-white flex items-center justify-center text-xs font-bold text-muted -ml-2 z-10">
+                        +2
+                    </div>
+</div>
+<div class="flex items-center gap-1 text-muted text-sm">
+<span class="material-symbols-outlined text-[18px]">videocam</span>
+                    Meet
+                </div>
+</div>
+</article>
+<!-- Meeting Card 2 -->
+<article class="bg-surface rounded-md p-5 shadow-card transition-transform active:scale-[0.98] cursor-pointer opacity-70">
+<div class="flex justify-between items-start mb-4">
+<div>
+<h3 class="font-heading font-bold text-xl text-text-main mb-1">Weekly Product Review</h3>
+<p class="text-sm font-medium text-muted flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]">schedule</span>
+                        1:30 PM - 2:30 PM
+                    </p>
+</div>
+</div>
+<div class="flex justify-between items-end">
+<div class="flex avatar-stack">
+<img class="w-8 h-8 rounded-full object-cover" data-alt="A small circular avatar photo of a team lead looking confident." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDqDVp6Nr-rzS1f5NKhvYnfCO4qVl3RV13cusmdljAqUiK7KWL2BmP-E3lrdO4wxnANCSP4aAkMQmaYkCq-WRCIkfQrnr0EQ6FKQ89EQJViBloeuJnQCh_KRk3gPwwIII7pWk1j9ZelWrFVZJ3ID2bSj-cmKVtB0w4NKTpg_DL6RdJmwm8WUlPf1J7Y2t1eDEfehhWxJ81ZpBrqwDrqtEaQgG6ouREB-5n_O2DMUYNpxTcxueLEhDX6nqOGsb5XS6kixi_R_kTUkFc"/>
+<img class="w-8 h-8 rounded-full object-cover" data-alt="A small circular avatar photo of a designer with short hair." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBmzUDqp6dzkDSYVKZab7zI88A-cWReijMOO30z77dUzoAO_qDZK7SeLIywskQr3ricLLhtE_TTbt_ZAWDor6u4gD7ImoaIOUuDBrR5VkDPvjA0VrXupnZXZyy4JiRRZDmM9fc1chPBPUQ1ggTnnEv1uQeAGEE8H4DZBh9gkdsrJ5oNNUtA40TEpWgAYO4t05PkMEXPlHQGtEQierI8SVPcPtSDhbQyZKzohV6-2_lVL1H-O7JIAhYdJuiABGY-oc71fIaZfKkHYmU"/>
+</div>
+<div class="flex items-center gap-1 text-muted text-sm">
+<span class="material-symbols-outlined text-[18px]">domain</span>
+                    Room 4B
+                </div>
+</div>
+</article>
+<!-- Meeting Card 3 -->
+<article class="bg-surface rounded-md p-5 shadow-card transition-transform active:scale-[0.98] cursor-pointer opacity-70">
+<div class="flex justify-between items-start mb-4">
+<div>
+<h3 class="font-heading font-bold text-xl text-text-main mb-1">1:1 with Alex</h3>
+<p class="text-sm font-medium text-muted flex items-center gap-1">
+<span class="material-symbols-outlined text-[16px]">schedule</span>
+                        4:00 PM - 4:30 PM
+                    </p>
+</div>
+</div>
+<div class="flex justify-between items-end">
+<div class="flex avatar-stack">
+<img class="w-8 h-8 rounded-full object-cover" data-alt="A small circular avatar photo of Alex smiling warmly." src="https://lh3.googleusercontent.com/aida-public/AB6AXuBF68qwuS-qJbK0V7UpmmWoAmYRo7Znh6aU44t3zHSCzoABCFUTX4wUYXCgz6OWCvYbEIt0d79nV2UrDLOTIxxnVYe2BCB0-AGoz6YfWXOSK92hwbQJvwfaDun8sAJrYc919ZdDAXKIj4Q3onrBkQPcsfroT7sGiR7R_D6hzlSgHEoXALaeI87XOXK_4obnaN5zM5bv7oykiD_u__vcjdP0NId49IT8juTLSNc1TaWuidYKoSXJ0UzZRvO7n28DNWwzOReaBFDHPo4"/>
+</div>
+<div class="flex items-center gap-1 text-muted text-sm">
+<span class="material-symbols-outlined text-[18px]">call</span>
+                    Audio
+                </div>
+</div>
+</article>
+</main>
+<!-- Quick Record FAB -->
+<button aria-label="Start ad-hoc recording" class="fixed bottom-[100px] right-6 w-16 h-16 bg-primary text-white rounded-full flex items-center justify-center shadow-diffused hover:scale-105 active:scale-95 transition-all z-40">
+<span class="material-symbols-outlined text-[32px] font-light" style="font-variation-settings: 'FILL' 1;">mic</span>
+</button>
+<!-- Shared Bottom Navigation (Relevance Test: Destination Screen -> Show Nav) -->
+<div class="fixed bottom-0 left-0 w-full z-50">
+<div class="flex gap-2 border-t border-black/5 bg-surface px-4 pb-6 pt-3 rounded-t-[32px] shadow-[0_-4px_24px_rgba(0,0,0,0.02)]">
+<a class="flex flex-1 flex-col items-center justify-end gap-1 rounded-full text-primary" href="#">
+<div class="text-primary flex h-8 items-center justify-center">
+<span class="material-symbols-outlined text-[28px]" style="font-variation-settings: 'FILL' 1;">calendar_today</span>
+</div>
+<p class="text-primary text-[11px] font-bold leading-normal tracking-wide uppercase">Upcoming</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-end gap-1 text-muted hover:text-text-main transition-colors" href="#">
+<div class="flex h-8 items-center justify-center">
+<span class="material-symbols-outlined text-[28px]">format_list_bulleted</span>
+</div>
+<p class="text-[11px] font-bold leading-normal tracking-wide uppercase">Threads</p>
+</a>
+<a class="flex flex-1 flex-col items-center justify-end gap-1 text-muted hover:text-text-main transition-colors" href="#">
+<div class="flex h-8 items-center justify-center">
+<span class="material-symbols-outlined text-[28px]">settings</span>
+</div>
+<p class="text-[11px] font-bold leading-normal tracking-wide uppercase">Settings</p>
+</a>
+</div>
+</div>
+</body></html>

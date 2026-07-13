@@ -1,0 +1,82 @@
+{
+  "project_info": {
+    "project_number": "348324056471",
+    "project_id": "meeting-app-844aa",
+    "storage_bucket": "meeting-app-844aa.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:348324056471:android:ec21faf4702147a5c608d2",
+        "android_client_info": {
+          "package_name": "com.convene.convene"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "348324056471-jhe60lt0lp0p28ikj212j6e106bvjl4n.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD3sYVVk8IX0E035t5Q38qmqBQZm-OPs7U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "348324056471-jhe60lt0lp0p28ikj212j6e106bvjl4n.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "348324056471-f11argvd9vumsoj12lj975n1a2k0o27f.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.convene.convene"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:348324056471:android:da7745fd6739c801c608d2",
+        "android_client_info": {
+          "package_name": "com.meeting_app.convene"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "348324056471-jhe60lt0lp0p28ikj212j6e106bvjl4n.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD3sYVVk8IX0E035t5Q38qmqBQZm-OPs7U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "348324056471-jhe60lt0lp0p28ikj212j6e106bvjl4n.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "348324056471-f11argvd9vumsoj12lj975n1a2k0o27f.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.convene.convene"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
