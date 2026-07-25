@@ -1,6 +1,7 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'user.dart';
 
-enum SmartBlockType { decision, actionItem, keyInsight }
+enum SmartBlockType { summary, decision, actionItem, keyInsight }
 
 class Reaction {
   final String emoji;
@@ -41,6 +42,8 @@ class SmartBlock {
 
   String get typeLabel {
     switch (type) {
+      case SmartBlockType.summary:
+        return 'Summary';
       case SmartBlockType.decision:
         return 'Decision';
       case SmartBlockType.actionItem:
@@ -113,7 +116,9 @@ class ContextThread {
       meetingTitle: json['meetingTitle'] as String,
       meetingId: json['meetingId'] as String?,
       groupId: json['groupId'] as String?,
-      createdAt: DateTime.parse(json['createdAt'] as String),
+      createdAt: json['createdAt'] is Timestamp 
+          ? (json['createdAt'] as Timestamp).toDate() 
+          : DateTime.parse(json['createdAt'] as String),
       participants: (json['participants'] as List<dynamic>?)
               ?.map((e) => AppUser.fromJson(e as Map<String, dynamic>))
               .toList() ??
@@ -143,6 +148,9 @@ class ContextThread {
       'groupId': groupId,
       'createdAt': createdAt.toIso8601String(),
       'participants': participants.map((e) => e.toJson()).toList(),
+      // Flat list of participant UIDs, kept in sync with `participants` -
+      // Firestore security rules key off this to check thread access.
+      'participantIds': participants.map((e) => e.id).toList(),
       'blocks': blocks.map((e) => e.toJson()).toList(),
       'comments': comments.map((e) => e.toJson()).toList(),
       'isGenerating': isGenerating,
@@ -172,11 +180,20 @@ extension ReactionJson on Reaction {
 }
 
 extension SmartBlockJson on SmartBlock {
+  static SmartBlockType _parseType(String? t) {
+    if (t == null) return SmartBlockType.keyInsight;
+    final lower = t.toLowerCase();
+    if (lower.contains('summary')) return SmartBlockType.summary;
+    if (lower.contains('decision')) return SmartBlockType.decision;
+    if (lower.contains('action')) return SmartBlockType.actionItem;
+    return SmartBlockType.keyInsight;
+  }
+
   static SmartBlock fromJson(Map<String, dynamic> json) {
     return SmartBlock(
-      id: json['id'] as String,
-      type: SmartBlockType.values.firstWhere((e) => e.name == json['type']),
-      content: json['content'] as String,
+      id: json['id'] as String? ?? 'block_${DateTime.now().millisecondsSinceEpoch}_${json.hashCode}',
+      type: _parseType(json['type'] as String?),
+      content: json['content'] as String? ?? '',
       assignee: json['assignee'] as String?,
       isCompleted: json['isCompleted'] as bool? ?? false,
       reactions: (json['reactions'] as List<dynamic>?)
@@ -204,7 +221,9 @@ extension ThreadCommentJson on ThreadComment {
       id: json['id'] as String,
       author: AppUser.fromJson(json['author'] as Map<String, dynamic>),
       content: json['content'] as String,
-      timestamp: DateTime.parse(json['timestamp'] as String),
+      timestamp: json['timestamp'] is Timestamp
+          ? (json['timestamp'] as Timestamp).toDate()
+          : DateTime.parse(json['timestamp'] as String),
     );
   }
 

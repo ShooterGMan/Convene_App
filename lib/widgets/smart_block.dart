@@ -103,6 +103,20 @@ class SmartBlockWidget extends StatelessWidget {
 
   Widget _buildLeadingIcon(BuildContext context) {
     switch (block.type) {
+      case SmartBlockType.summary:
+        return Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: context.colors.primaryLight,
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            Icons.format_align_left_rounded,
+            size: 16,
+            color: context.colors.primary,
+          ),
+        );
       case SmartBlockType.decision:
         return Container(
           width: 28,
@@ -160,6 +174,8 @@ class SmartBlockWidget extends StatelessWidget {
 
   String get _typeLabel {
     switch (block.type) {
+      case SmartBlockType.summary:
+        return 'Summary';
       case SmartBlockType.decision:
         return 'Decision';
       case SmartBlockType.actionItem:
@@ -171,6 +187,8 @@ class SmartBlockWidget extends StatelessWidget {
 
   Color _labelColor(BuildContext context) {
     switch (block.type) {
+      case SmartBlockType.summary:
+        return context.colors.primary;
       case SmartBlockType.decision:
         return context.colors.accent;
       case SmartBlockType.actionItem:

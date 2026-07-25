@@ -1,11 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:go_router/go_router.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter/services.dart';
 
+import '../models/group.dart';
 import '../models/meeting.dart';
+import '../providers/auth_provider.dart';
+import '../providers/data_providers.dart';
+import '../repositories/firestore_repository.dart';
 import '../theme/app_theme.dart';
 import 'avatar_stack.dart';
 
@@ -13,7 +18,7 @@ import 'avatar_stack.dart';
 ///
 /// Shows title, time range, countdown badge (if within 60 min),
 /// participant avatars, and meeting type badge.
-class MeetingCard extends StatefulWidget {
+class MeetingCard extends ConsumerStatefulWidget {
   final Meeting meeting;
   final VoidCallback? onTap;
 
@@ -24,10 +29,10 @@ class MeetingCard extends StatefulWidget {
   });
 
   @override
-  State<MeetingCard> createState() => _MeetingCardState();
+  ConsumerState<MeetingCard> createState() => _MeetingCardState();
 }
 
-class _MeetingCardState extends State<MeetingCard>
+class _MeetingCardState extends ConsumerState<MeetingCard>
     with SingleTickerProviderStateMixin {
   late final AnimationController _scaleController;
   late final Animation<double> _scaleAnimation;
@@ -178,6 +183,33 @@ class _MeetingCardState extends State<MeetingCard>
                   ],
                 ),
 
+                if (meeting.summaryError != null && meeting.threadId == null) ...[
+                  SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: context.colors.error.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.error_outline_rounded, size: 16, color: context.colors.error),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Summary failed to generate for this meeting. Take your own notes if needed.',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: context.colors.error,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
                 SizedBox(height: 16),
 
                 // Avatars + type badge row
@@ -193,19 +225,43 @@ class _MeetingCardState extends State<MeetingCard>
                   ],
                 ),
 
+                // RSVP: only makes sense for group meetings that haven't
+                // happened yet - attendance polling for something already
+                // over is meaningless.
+                if (meeting.groupId != null && !meeting.isPast) ...[
+                  SizedBox(height: 14),
+                  _RsvpRow(meeting: meeting),
+                ],
+
                 if (isSoon) ...[
                   SizedBox(height: 16),
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
                       onPressed: () {
-                        context.push('/recording/${meeting.id}', extra: {
-                          'title': meeting.title,
-                          'participants': meeting.participants,
-                        });
+                        if (meeting.type == MeetingType.meet) {
+                          // Online Meeting: Route to Pre-Join Room
+                          context.push('/pre-join/${meeting.id}', extra: {
+                            'title': meeting.title,
+                            'participants': meeting.participants,
+                            'groupId': meeting.groupId,
+                          });
+                        } else {
+                          // Offline Meeting: Route to Recording Screen
+                          context.push('/recording/${meeting.id}', extra: {
+                            'title': meeting.title,
+                            'participants': meeting.participants,
+                            'groupId': meeting.groupId,
+                          });
+                        }
                       },
-                      icon: Icon(Icons.mic, size: 18),
-                      label: Text('Start Session'),
+                      icon: Icon(
+                        meeting.type == MeetingType.meet ? Icons.video_call : Icons.mic, 
+                        size: 18,
+                      ),
+                      label: Text(
+                        meeting.type == MeetingType.meet ? 'Join Online Room' : 'Record Session',
+                      ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: context.colors.primary,
                         foregroundColor: Colors.white,
@@ -222,20 +278,21 @@ class _MeetingCardState extends State<MeetingCard>
                     ),
                   ),
                 ],
-
-                if (meeting.meetUrl != null) ...[
-                  SizedBox(height: 16),
+                
+                if (meeting.type == MeetingType.meet) ...[
+                  SizedBox(height: 12),
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton.icon(
-                      onPressed: () async {
-                        final url = Uri.parse(meeting.meetUrl!);
-                        if (await canLaunchUrl(url)) {
-                          await launchUrl(url, mode: LaunchMode.externalApplication);
-                        }
+                      onPressed: () {
+                        final inviteLink = 'https://meeting-app-844aa.web.app/pre-join/${meeting.id}';
+                        Clipboard.setData(ClipboardData(text: inviteLink));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Invite Link Copied!')),
+                        );
                       },
-                      icon: Icon(Icons.video_call, size: 18),
-                      label: Text('Join Google Meet'),
+                      icon: Icon(Icons.copy, size: 18),
+                      label: Text('Copy Invite Link'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: context.colors.primary,
                         side: BorderSide(color: context.colors.primary.withValues(alpha: 0.5)),
@@ -260,6 +317,225 @@ class _MeetingCardState extends State<MeetingCard>
         .animate()
         .fadeIn(duration: 400.ms, curve: Curves.easeOut)
         .slideY(begin: 0.05, end: 0, duration: 400.ms, curve: Curves.easeOut);
+  }
+}
+
+/// Yes/No/Maybe attendance row with live tallies. Tapping your own status
+/// again clears it (no self-deletion of others' entries is possible - the
+/// Firestore rules only allow writing your own key in the rsvps map).
+class _RsvpRow extends ConsumerWidget {
+  final Meeting meeting;
+
+  const _RsvpRow({required this.meeting});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final uid = ref.watch(currentUserProvider)?.uid;
+    final myStatus = uid == null ? null : meeting.rsvpFor(uid);
+
+    Future<void> setStatus(RsvpStatus status) async {
+      if (uid == null) return;
+      try {
+        await ref.read(firestoreRepositoryProvider).setMeetingRsvp(meeting.id, uid, status);
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to RSVP: $e')),
+          );
+        }
+      }
+    }
+
+    final totalResponses = meeting.rsvps.length;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Text(
+              'Attending?',
+              style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w600, color: context.colors.textMuted),
+            ),
+            const Spacer(),
+            _RsvpChip(
+              label: 'Yes',
+              count: meeting.yesCount,
+              isSelected: myStatus == RsvpStatus.yes,
+              color: Colors.green,
+              onTap: () => setStatus(RsvpStatus.yes),
+            ),
+            SizedBox(width: 6),
+            _RsvpChip(
+              label: 'Maybe',
+              count: meeting.maybeCount,
+              isSelected: myStatus == RsvpStatus.maybe,
+              color: Colors.orange,
+              onTap: () => setStatus(RsvpStatus.maybe),
+            ),
+            SizedBox(width: 6),
+            _RsvpChip(
+              label: 'No',
+              count: meeting.noCount,
+              isSelected: myStatus == RsvpStatus.no,
+              color: Colors.redAccent,
+              onTap: () => setStatus(RsvpStatus.no),
+            ),
+          ],
+        ),
+        if (totalResponses > 0) ...[
+          SizedBox(height: 8),
+          GestureDetector(
+            onTap: () => _showBreakdown(context, ref),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.people_alt_rounded, size: 13, color: context.colors.primary),
+                SizedBox(width: 5),
+                Text(
+                  'See who\'s responded ($totalResponses)',
+                  style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: context.colors.primary),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _showBreakdown(BuildContext context, WidgetRef ref) {
+    // Resolve responder UIDs to names using the meeting's own participants
+    // plus (for group meetings) the group's member list, since group members
+    // can RSVP without being explicit participants.
+    final nameById = <String, String>{};
+    for (final p in meeting.participants) {
+      nameById[p.id] = p.name;
+    }
+    final groups = ref.read(groupsProvider).maybeWhen(data: (g) => g, orElse: () => const <Group>[]);
+    if (meeting.groupId != null) {
+      for (final g in groups) {
+        if (g.id == meeting.groupId) {
+          for (final m in g.members) {
+            nameById.putIfAbsent(m.id, () => m.name);
+          }
+        }
+      }
+    }
+
+    List<String> namesFor(bool Function(String) pred) => meeting.rsvps.entries
+        .where((e) => pred(e.value))
+        .map((e) => nameById[e.key] ?? 'Someone')
+        .toList()
+      ..sort();
+
+    final going = namesFor((v) => v == 'yes');
+    final maybe = namesFor((v) => v == 'maybe');
+    final cant = namesFor((v) => v == 'no');
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => Container(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+        decoration: BoxDecoration(
+          color: context.colors.background,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Attendance · ${meeting.title}',
+              style: GoogleFonts.plusJakartaSans(fontSize: 16, fontWeight: FontWeight.w700, color: context.colors.textMain),
+            ),
+            SizedBox(height: 16),
+            _RsvpGroup(label: 'Going', color: Colors.green, names: going),
+            _RsvpGroup(label: 'Maybe', color: Colors.orange, names: maybe),
+            _RsvpGroup(label: "Can't make it", color: Colors.redAccent, names: cant),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RsvpGroup extends StatelessWidget {
+  final String label;
+  final Color color;
+  final List<String> names;
+
+  const _RsvpGroup({required this.label, required this.color, required this.names});
+
+  @override
+  Widget build(BuildContext context) {
+    if (names.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+              SizedBox(width: 8),
+              Text(
+                '$label (${names.length})',
+                style: GoogleFonts.plusJakartaSans(fontSize: 13, fontWeight: FontWeight.w800, color: context.colors.textMain),
+              ),
+            ],
+          ),
+          SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.only(left: 16),
+            child: Text(
+              names.join(', '),
+              style: GoogleFonts.plusJakartaSans(fontSize: 13, color: context.colors.textMuted, height: 1.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RsvpChip extends StatelessWidget {
+  final String label;
+  final int count;
+  final bool isSelected;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _RsvpChip({
+    required this.label,
+    required this.count,
+    required this.isSelected,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? color.withValues(alpha: 0.15) : context.colors.background,
+          borderRadius: BorderRadius.circular(AppRadius.full),
+          border: Border.all(color: isSelected ? color : context.colors.border),
+        ),
+        child: Text(
+          count > 0 ? '$label ($count)' : label,
+          style: GoogleFonts.plusJakartaSans(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            color: isSelected ? color : context.colors.textMuted,
+          ),
+        ),
+      ),
+    );
   }
 }
 

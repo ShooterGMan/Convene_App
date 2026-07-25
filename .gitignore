@@ -43,3 +43,15 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Secrets - never commit
+.env
+functions/.env
+*.env.local
+
+# Node / Cloud Functions build output
+**/node_modules/
+functions/lib/
+
+# Firebase CLI local deploy cache
+.firebase/

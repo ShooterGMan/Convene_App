@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -13,15 +15,17 @@ class LoginScreen extends ConsumerStatefulWidget {
 }
 
 class _LoginScreenState extends ConsumerState<LoginScreen> {
+  final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  
+
   bool _isLogin = true;
   bool _isLoading = false;
   String? _errorMessage;
 
   @override
   void dispose() {
+    _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
@@ -30,6 +34,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   Future<void> _submit() async {
     if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
       setState(() => _errorMessage = 'Please fill in all fields.');
+      return;
+    }
+    if (!_isLogin && _nameController.text.trim().isEmpty) {
+      setState(() => _errorMessage = 'Please enter your name.');
       return;
     }
 
@@ -49,6 +57,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         await authRepo.createUserWithEmailAndPassword(
           _emailController.text.trim(),
           _passwordController.text.trim(),
+          displayName: _nameController.text.trim(),
         );
       }
     } catch (e) {
@@ -94,10 +103,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 // Logo & Title
-                Icon(
-                  Icons.auto_awesome,
-                  size: 64,
-                  color: context.colors.primary,
+                Image.asset(
+                  'assets/images/icon.png',
+                  width: 80,
+                  height: 80,
                 ).animate().scale(delay: 200.ms, duration: 400.ms, curve: Curves.easeOutBack),
                 const SizedBox(height: 16),
                 Text(
@@ -139,6 +148,27 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       ),
                     ),
                   ).animate().fadeIn(),
+
+                // Name Field (sign-up only)
+                if (!_isLogin) ...[
+                  TextField(
+                    controller: _nameController,
+                    textCapitalization: TextCapitalization.words,
+                    style: TextStyle(color: context.colors.textMain),
+                    decoration: InputDecoration(
+                      labelText: 'Your Name',
+                      labelStyle: TextStyle(color: context.colors.textMuted),
+                      filled: true,
+                      fillColor: context.colors.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.sm),
+                        borderSide: BorderSide.none,
+                      ),
+                      prefixIcon: Icon(Icons.person_outline, color: context.colors.textLight),
+                    ),
+                  ).animate().fadeIn(delay: 450.ms).slideY(begin: 0.1, end: 0),
+                  const SizedBox(height: 16),
+                ],
 
                 // Email Field
                 TextField(
@@ -226,65 +256,64 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   ),
                 ).animate().fadeIn(delay: 800.ms),
 
-                const SizedBox(height: 24),
-                
-                // Divider
-                Row(
-                  children: [
-                    Expanded(child: Divider(color: context.colors.border)),
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                if (kIsWeb || (!kIsWeb && !Platform.isWindows)) ...[
+                  const SizedBox(height: 24),
+                  Row(
+                    children: [
+                      Expanded(child: Divider(color: context.colors.border)),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Text(
+                          'OR',
+                          style: GoogleFonts.plusJakartaSans(
+                            color: context.colors.textMuted,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      Expanded(child: Divider(color: context.colors.border)),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Google Sign In
+                  OutlinedButton.icon(
+                    onPressed: _isLoading ? null : _signInWithGoogle,
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: BorderSide(color: context.colors.border),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.sm)),
+                      backgroundColor: Colors.transparent,
+                      foregroundColor: context.colors.textMain,
+                    ),
+                    icon: Container(
+                      width: 24,
+                      height: 24,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      alignment: Alignment.center,
                       child: Text(
-                        'OR',
+                        'G',
                         style: GoogleFonts.plusJakartaSans(
-                          color: context.colors.textLight,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
+                          color: Colors.black,
+                          fontWeight: FontWeight.w800,
+                          fontSize: 16,
                         ),
                       ),
                     ),
-                    Expanded(child: Divider(color: context.colors.border)),
-                  ],
-                ).animate().fadeIn(delay: 900.ms),
-
-                const SizedBox(height: 24),
-
-                // Google Sign In
-                OutlinedButton.icon(
-                  onPressed: _isLoading ? null : _signInWithGoogle,
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    side: BorderSide(color: context.colors.border),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(AppRadius.sm),
-                    ),
-                  ),
-                  icon: Container(
-                    width: 24,
-                    height: 24,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(
-                      'G',
+                    label: Text(
+                      'Continue with Google',
                       style: GoogleFonts.plusJakartaSans(
-                        color: Colors.black,
-                        fontWeight: FontWeight.w800,
                         fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        color: context.colors.textMain,
                       ),
                     ),
-                  ),
-                  label: Text(
-                    'Continue with Google',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: context.colors.textMain,
-                    ),
-                  ),
-                ).animate().fadeIn(delay: 1000.ms).slideY(begin: 0.1, end: 0),
+                  ).animate().fadeIn(delay: 1000.ms).slideY(begin: 0.1, end: 0),
+                ],
               ],
             ),
           ),

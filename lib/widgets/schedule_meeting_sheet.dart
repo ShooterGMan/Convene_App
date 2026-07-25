@@ -27,6 +27,15 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
   MeetingType _selectedType = MeetingType.meet;
   bool _isLoading = false;
   bool _syncWithCalendar = true;
+  int _durationMinutes = 30;
+
+  static const List<int> _durationOptions = [15, 30, 45, 60, 90, 120];
+
+  String _formatDuration(int minutes) {
+    if (minutes < 60) return '$minutes min';
+    final hours = minutes / 60;
+    return hours == hours.roundToDouble() ? '${hours.toInt()} hr' : '${hours.toStringAsFixed(1)} hr';
+  }
 
   @override
   void dispose() {
@@ -77,7 +86,7 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
         _selectedTime.hour,
         _selectedTime.minute,
       );
-      final endTime = startTime.add(const Duration(minutes: 60));
+      final endTime = startTime.add(Duration(minutes: _durationMinutes));
 
       List<String> guestEmails = [];
       if (_guestEmailsController.text.trim().isNotEmpty) {
@@ -92,40 +101,58 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
         } catch (_) {}
       }
 
-      guestEmails = guestEmails.toSet().toList();
+      // Guests are resolved to real accounts and added as participants
+      // SERVER-SIDE (onMeetingCreated), so this works no matter what build
+      // the client is on. The creator is the only participant we set here.
+      final participants = [user];
 
-      String? meetUrl;
-      if (_syncWithCalendar && _selectedType == MeetingType.meet) {
-        meetUrl = await ref.read(calendarServiceProvider).createEvent(
-          title: _titleController.text.trim(),
-          startTime: startTime,
-          endTime: endTime,
-          guestEmails: guestEmails,
-        );
-      }
+      final meetingId = DateTime.now().millisecondsSinceEpoch.toString();
+      final conveneUrl = 'https://meeting-app-844aa.web.app/pre-join/$meetingId';
 
       final meeting = Meeting(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        id: meetingId,
         title: _titleController.text.trim(),
         groupId: _selectedGroupId,
         startTime: startTime,
         endTime: endTime,
         type: _selectedType,
-        participants: [user],
-        meetUrl: meetUrl,
+        participants: participants,
         guestEmails: guestEmails,
       );
 
-      await ref.read(firestoreRepositoryProvider).createMeeting(meeting);
+      // Create the meeting FIRST - this is the operation that actually matters.
+      // Calendar sync is a best-effort extra afterward, so a broken/expired
+      // Google token (common for email-signup users who never granted Calendar
+      // access) can never block the meeting from being scheduled.
+      await ref.read(firestoreRepositoryProvider).createMeeting(meeting).timeout(const Duration(seconds: 10));
 
-      if (_syncWithCalendar && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Meeting scheduled & added to Google Calendar!')),
-        );
+      bool calendarSynced = false;
+      String? calendarError;
+      if (_syncWithCalendar && _selectedType == MeetingType.meet) {
+        try {
+          await ref.read(calendarServiceProvider).createEvent(
+                title: _titleController.text.trim(),
+                startTime: startTime,
+                endTime: endTime,
+                guestEmails: guestEmails,
+                conveneUrl: conveneUrl,
+              ).timeout(const Duration(seconds: 15));
+          calendarSynced = true;
+        } catch (e) {
+          calendarError = e.toString();
+          debugPrint('Calendar sync failed (non-fatal): $e');
+        }
       }
 
       if (mounted) {
         Navigator.pop(context);
+        final msg = !_syncWithCalendar || _selectedType != MeetingType.meet
+            ? 'Meeting scheduled!'
+            : calendarSynced
+                ? 'Meeting scheduled & added to Google Calendar!'
+                : 'Meeting scheduled. (Couldn\'t add to Google Calendar - reconnect Google to enable this.)';
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        if (calendarError != null) debugPrint(calendarError);
       }
     } catch (e) {
       if (mounted) {
@@ -252,6 +279,47 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
                 ),
               ),
             ],
+          ),
+          SizedBox(height: 16),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Duration',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: context.colors.textMuted,
+              ),
+            ),
+          ),
+          SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: _durationOptions.map((minutes) {
+              final isSelected = _durationMinutes == minutes;
+              return GestureDetector(
+                onTap: () => setState(() => _durationMinutes = minutes),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: isSelected ? context.colors.primary.withValues(alpha: 0.1) : context.colors.surface,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: isSelected ? context.colors.primary : Colors.transparent,
+                    ),
+                  ),
+                  child: Text(
+                    _formatDuration(minutes),
+                    style: GoogleFonts.plusJakartaSans(
+                      color: isSelected ? context.colors.primary : context.colors.textMuted,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
           ),
           SizedBox(height: 16),
           groupsAsync.when(

@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../providers/auth_provider.dart';
 import '../../providers/data_providers.dart';
 import '../../repositories/firestore_repository.dart';
 
@@ -13,6 +16,7 @@ import '../../models/group.dart';
 import '../../models/context_thread.dart';
 import '../../models/user.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/invite_member_dialog.dart';
 
 class GroupDetailScreen extends ConsumerStatefulWidget {
   final String groupId;
@@ -96,15 +100,34 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
           ],
         ),
         actions: [
-          PopupMenuButton<String>(
-            icon: Icon(Icons.more_vert, color: context.colors.textMain),
-            onSelected: (_) {},
-            itemBuilder: (context) => [
-              const PopupMenuItem(value: 'edit', child: Text('Edit Group')),
-              const PopupMenuItem(value: 'mute', child: Text('Mute Notifications')),
-              const PopupMenuItem(value: 'leave', child: Text('Leave Group')),
-            ],
-          ),
+          Builder(builder: (context) {
+            final selfId = ref.read(currentUserProvider)?.uid ?? '';
+            final isAdmin = group.isAdmin(selfId);
+            return PopupMenuButton<String>(
+              icon: Icon(Icons.more_vert, color: context.colors.textMain),
+              onSelected: (value) async {
+                if (value == 'edit') {
+                  _editGroupName(context, ref, group);
+                } else if (value == 'invite_link') {
+                  _shareInviteLink(context, group);
+                } else if (value == 'leave') {
+                  _confirmLeaveGroup(context, ref, group);
+                } else if (value == 'delete') {
+                  _confirmDeleteGroup(context, ref, group);
+                }
+              },
+              itemBuilder: (context) => [
+                if (isAdmin) const PopupMenuItem(value: 'edit', child: Text('Edit Group')),
+                const PopupMenuItem(value: 'invite_link', child: Text('Copy Invite Link')),
+                const PopupMenuItem(value: 'leave', child: Text('Leave Group')),
+                if (isAdmin)
+                  const PopupMenuItem(
+                    value: 'delete',
+                    child: Text('Delete Group', style: TextStyle(color: Colors.redAccent)),
+                  ),
+              ],
+            );
+          }),
         ],
         bottom: TabBar(
           controller: _tabController,
@@ -138,6 +161,182 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
       loading: () => Scaffold(body: Center(child: CircularProgressIndicator())),
       error: (e, st) => Scaffold(body: Center(child: Text('Error: $e'))),
     );
+  }
+}
+
+Future<void> _editGroupName(BuildContext context, WidgetRef ref, Group group) async {
+  final controller = TextEditingController(text: group.name);
+  final newName = await showDialog<String>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text('Edit Group'),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        decoration: InputDecoration(hintText: 'Group name'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+          child: Text('Save'),
+        ),
+      ],
+    ),
+  );
+
+  if (newName == null || newName.isEmpty || newName == group.name) return;
+
+  try {
+    await ref.read(firestoreRepositoryProvider).updateGroupName(group.id, newName);
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to rename group: $e')),
+      );
+    }
+  }
+}
+
+void _shareInviteLink(BuildContext context, Group group) {
+  final link = 'https://meeting-app-844aa.web.app/join-group/${group.inviteCode}';
+  Clipboard.setData(ClipboardData(text: link));
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('Invite link copied! Anyone who opens it can join this group.')),
+  );
+}
+
+Future<void> _confirmDeleteGroup(BuildContext context, WidgetRef ref, Group group) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Delete Group?'),
+      content: Text(
+        'This permanently deletes "${group.name}" for everyone. Past meeting summaries stay visible to '
+        'the people who were in those meetings, but the group itself and its member list are gone. This can\'t be undone.',
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
+        ),
+      ],
+    ),
+  );
+
+  if (confirmed != true) return;
+
+  try {
+    await FirebaseFunctions.instance.httpsCallable('deleteGroup').call({'groupId': group.id});
+    if (context.mounted) {
+      context.go('/groups');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Deleted "${group.name}".')),
+      );
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to delete group: $e')),
+      );
+    }
+  }
+}
+
+Future<void> _confirmLeaveGroup(BuildContext context, WidgetRef ref, Group group) async {
+  final selfId = ref.read(currentUserProvider)?.uid;
+
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Leave Group?'),
+      content: Text('You\'ll stop seeing meeting summaries from "${group.name}" unless someone invites you back.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Leave', style: TextStyle(color: Colors.red)),
+        ),
+      ],
+    ),
+  );
+
+  if (confirmed != true || selfId == null) return;
+
+  try {
+    await FirebaseFunctions.instance.httpsCallable('removeGroupMember').call({
+      'groupId': group.id,
+      'userId': selfId,
+    });
+    if (context.mounted) context.go('/groups');
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to leave group: $e')),
+      );
+    }
+  }
+}
+
+Future<void> _setAdmin(BuildContext context, Group group, AppUser member, bool makeAdmin) async {
+  try {
+    await FirebaseFunctions.instance.httpsCallable('setGroupAdmin').call({
+      'groupId': group.id,
+      'userId': member.id,
+      'makeAdmin': makeAdmin,
+    });
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(makeAdmin ? 'Made ${member.name} an admin.' : 'Removed ${member.name} as admin.')),
+      );
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to update admin: $e')),
+      );
+    }
+  }
+}
+
+Future<void> _confirmRemoveMember(BuildContext context, Group group, AppUser member) async {
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Remove Member?'),
+      content: Text('${member.name} will lose access to this group\'s meeting summaries.'),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Remove', style: TextStyle(color: Colors.red)),
+        ),
+      ],
+    ),
+  );
+
+  if (confirmed != true) return;
+
+  try {
+    await FirebaseFunctions.instance.httpsCallable('removeGroupMember').call({
+      'groupId': group.id,
+      'userId': member.id,
+    });
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Removed ${member.name} from the group.')),
+      );
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to remove member: $e')),
+      );
+    }
   }
 }
 
@@ -214,6 +413,8 @@ class _ThreadSummaryCard extends StatelessWidget {
     int decisions = 0, actionItems = 0, insights = 0;
     for (final block in thread.blocks) {
       switch (block.type) {
+        case SmartBlockType.summary:
+          break;
         case SmartBlockType.decision:
           decisions++;
           break;
@@ -348,6 +549,9 @@ class _MembersTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final selfId = ref.watch(currentUserProvider)?.uid;
+    final isSelfAdmin = selfId != null && group.isAdmin(selfId);
+
     return Column(
       children: [
         Expanded(
@@ -356,8 +560,18 @@ class _MembersTab extends ConsumerWidget {
             itemCount: group.members.length,
             itemBuilder: (context, index) {
               final member = group.members[index];
-              final isAdmin = member.id == group.createdBy.id;
-              return _MemberRow(user: member, isAdmin: isAdmin)
+              final isAdmin = group.isAdmin(member.id);
+              final isNew = group.isRecentMember(member.id);
+              final isSelf = member.id == selfId;
+              return _MemberRow(
+                user: member,
+                isAdmin: isAdmin,
+                isNew: isNew,
+                // Admins get a management menu on everyone except themselves.
+                canManage: isSelfAdmin && !isSelf,
+                onRemove: () => _confirmRemoveMember(context, group, member),
+                onToggleAdmin: () => _setAdmin(context, group, member, !isAdmin),
+              )
                   .animate()
                   .fadeIn(
                     delay: Duration(milliseconds: 60 * index),
@@ -373,55 +587,51 @@ class _MembersTab extends ConsumerWidget {
             },
           ),
         ),
-        // Invite member button
+        // Invite / share buttons
         SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
-            child: SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: () async {
-                  final repo = ref.read(firestoreRepositoryProvider);
-                  // Create a dummy user to add
-                  final dummyUser = AppUser(
-                    id: 'user_${DateTime.now().millisecondsSinceEpoch}',
-                    name: 'Guest User',
-                    email: 'guest@convene.ai',
-                  );
-                  final updatedGroup = Group(
-                    id: group.id,
-                    name: group.name,
-                    description: group.description,
-                    avatarEmoji: group.avatarEmoji,
-                    createdAt: group.createdAt,
-                    createdBy: group.createdBy,
-                    threadIds: group.threadIds,
-                    members: [...group.members, dummyUser],
-                  );
-                  await repo.createGroup(updatedGroup);
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Invited Guest User!')),
-                    );
-                  }
-                },
-                icon: Icon(Icons.person_add_outlined, size: 20),
-                label: Text(
-                  'Invite Member',
-                  style: GoogleFonts.plusJakartaSans(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w700,
+            child: Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _shareInviteLink(context, group),
+                    icon: Icon(Icons.link_rounded, size: 20),
+                    label: Text(
+                      'Share Link',
+                      style: GoogleFonts.plusJakartaSans(fontSize: 15, fontWeight: FontWeight.w700),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: context.colors.primary,
+                      side: BorderSide(color: context.colors.primary, width: 2),
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.sm)),
+                    ),
                   ),
                 ),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: context.colors.primary,
-                  side: BorderSide(color: context.colors.primary, width: 2),
-                  padding: const EdgeInsets.symmetric(vertical: 16),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(AppRadius.sm),
+                SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      showDialog(
+                        context: context,
+                        builder: (context) => InviteMemberDialog(group: group),
+                      );
+                    },
+                    icon: Icon(Icons.person_add_outlined, size: 20),
+                    label: Text(
+                      'Invite',
+                      style: GoogleFonts.plusJakartaSans(fontSize: 15, fontWeight: FontWeight.w700),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: context.colors.primary,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.sm)),
+                    ),
                   ),
                 ),
-              ),
+              ],
             ),
           ),
         ),
@@ -433,8 +643,19 @@ class _MembersTab extends ConsumerWidget {
 class _MemberRow extends StatelessWidget {
   final AppUser user;
   final bool isAdmin;
+  final bool isNew;
+  final bool canManage;
+  final VoidCallback? onRemove;
+  final VoidCallback? onToggleAdmin;
 
-  const _MemberRow({required this.user, required this.isAdmin});
+  const _MemberRow({
+    required this.user,
+    required this.isAdmin,
+    this.isNew = false,
+    this.canManage = false,
+    this.onRemove,
+    this.onToggleAdmin,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -494,7 +715,25 @@ class _MemberRow extends StatelessWidget {
                 ],
               ),
             ),
-            // Role badge
+            // Badges
+            if (isNew) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: context.colors.primaryLight,
+                  borderRadius: BorderRadius.circular(AppRadius.full),
+                ),
+                child: Text(
+                  'New',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: context.colors.primary,
+                  ),
+                ),
+              ),
+              SizedBox(width: 8),
+            ],
             if (isAdmin)
               Container(
                 padding:
@@ -511,6 +750,27 @@ class _MemberRow extends StatelessWidget {
                     color: context.colors.accent,
                   ),
                 ),
+              ),
+            if (canManage)
+              PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert, size: 20, color: context.colors.textMuted),
+                onSelected: (v) {
+                  if (v == 'toggle_admin') {
+                    onToggleAdmin?.call();
+                  } else if (v == 'remove') {
+                    onRemove?.call();
+                  }
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem(
+                    value: 'toggle_admin',
+                    child: Text(isAdmin ? 'Remove as admin' : 'Make admin'),
+                  ),
+                  PopupMenuItem(
+                    value: 'remove',
+                    child: Text('Remove from group', style: TextStyle(color: context.colors.error)),
+                  ),
+                ],
               ),
           ],
         ),

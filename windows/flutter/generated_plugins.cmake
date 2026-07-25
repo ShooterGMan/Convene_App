@@ -4,10 +4,11 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   cloud_firestore
+  connectivity_plus
   firebase_auth
   firebase_core
-  permission_handler_windows
-  record_windows
+  flutter_webrtc
+  livekit_client
   url_launcher_windows
 )
 

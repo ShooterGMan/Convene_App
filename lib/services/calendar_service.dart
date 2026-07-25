@@ -13,12 +13,13 @@ class CalendarService {
 
   CalendarService(this._authRepository);
 
-  /// Creates a Google Calendar event and returns the Google Meet link (hangoutLink)
-  Future<String?> createEvent({
+  /// Creates a Google Calendar event with the Convene meeting link
+  Future<void> createEvent({
     required String title,
     required DateTime startTime,
     required DateTime endTime,
     required List<String> guestEmails,
+    required String conveneUrl,
   }) async {
     try {
       final token = await _authRepository.getGoogleAccessToken();
@@ -32,7 +33,7 @@ class CalendarService {
 
       final body = {
         'summary': title,
-        'description': 'Meeting scheduled via Convene.',
+        'description': 'Meeting scheduled via Convene.\n\nJoin Online: $conveneUrl',
         'start': {
           'dateTime': startTime.toUtc().toIso8601String(),
           'timeZone': 'UTC',
@@ -42,14 +43,6 @@ class CalendarService {
           'timeZone': 'UTC',
         },
         'attendees': attendees,
-        'conferenceData': {
-          'createRequest': {
-            'requestId': DateTime.now().millisecondsSinceEpoch.toString(),
-            'conferenceSolutionKey': {
-              'type': 'hangoutsMeet',
-            },
-          },
-        },
       };
 
       final response = await http.post(
@@ -61,10 +54,7 @@ class CalendarService {
         body: jsonEncode(body),
       );
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        final data = jsonDecode(response.body);
-        return data['hangoutLink'] as String?;
-      } else {
+      if (response.statusCode != 200 && response.statusCode != 201) {
         throw Exception('Failed to create calendar event: ${response.body}');
       }
     } catch (e) {

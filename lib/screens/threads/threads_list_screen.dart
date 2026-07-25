@@ -97,61 +97,6 @@ class _ThreadsListScreenState extends ConsumerState<ThreadsListScreen> {
                         ),
                       ),
                     ),
-                    
-                    // Mock AI Answer
-                    if (_isSearching) ...[
-                      SizedBox(height: 24),
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: context.colors.primaryLight.withValues(alpha: 0.3),
-                          borderRadius: BorderRadius.circular(AppRadius.md),
-                          border: Border.all(color: context.colors.primary.withValues(alpha: 0.3)),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Icon(Icons.auto_awesome, size: 16, color: context.colors.primary),
-                                SizedBox(width: 8),
-                                Text(
-                                  'AI ANSWER',
-                                  style: GoogleFonts.plusJakartaSans(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w800,
-                                    color: context.colors.primary,
-                                    letterSpacing: 1.0,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            SizedBox(height: 12),
-                            Text(
-                              'Based on the "Design Sync" meeting, the team agreed to migrate to Tailwind v3 by the end of Q3. Alex is currently drafting the PRD for this migration.',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
-                                color: context.colors.textMain,
-                                height: 1.5,
-                              ),
-                            ),
-                            SizedBox(height: 12),
-                            OutlinedButton.icon(
-                              onPressed: () => context.push('/thread/ct1'),
-                              icon: Icon(Icons.arrow_forward, size: 14),
-                              label: Text('Go to Context Thread'),
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: context.colors.primary,
-                                side: BorderSide(color: context.colors.primary.withValues(alpha: 0.5)),
-                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                                textStyle: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ).animate().fadeIn(duration: 300.ms).slideY(begin: -0.05, end: 0),
-                    ],
                   ],
                 ),
               ),

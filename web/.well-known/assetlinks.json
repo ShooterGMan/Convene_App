@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.convene.convene",
+      "sha256_cert_fingerprints": [
+        "5C:D4:C1:05:54:80:A5:CC:EA:DB:55:ED:68:7D:7E:E3:7D:18:05:B7:65:8C:67:B5:00:4C:B3:FC:E4:2C:CA:F3"
+      ]
+    }
+  }
+]

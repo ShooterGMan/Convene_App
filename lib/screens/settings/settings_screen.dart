@@ -2,10 +2,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:go_router/go_router.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../build_info.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/theme_provider.dart';
 import '../../repositories/auth_repository.dart';
+import '../../repositories/firestore_repository.dart';
+import '../../models/user.dart';
+import '../onboarding/onboarding_screen.dart';
 
 import '../../theme/app_theme.dart';
 
@@ -17,16 +23,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 }
 
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
-  // Meeting Settings
-  bool _autoRecord = true;
-  bool _sendSummaries = true;
-
-  // Integrations
-  bool _calendarSync = true;
-
-  // AI Preferences
-  String _summaryLevel = 'Detailed';
-  bool _speakerAttribution = true;
+  bool _isDeletingAccount = false;
 
   @override
   Widget build(BuildContext context) {
@@ -111,7 +108,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             ),
                             SizedBox(width: 8),
                             OutlinedButton(
-                              onPressed: () {},
+                              onPressed: () => _editProfile(user.name),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: context.colors.primary,
                                 side: BorderSide(
@@ -142,217 +139,66 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   _buildSectionHeader('MEETING SETTINGS'),
                   _buildSection(
                     children: [
-                      SwitchListTile(
-                        title: Text(
-                          'Auto-record meetings',
-                          style: _tileTextStyle(),
-                        ),
-                        subtitle: Text(
-                          'Automatically start recording when a session begins',
-                          style: _tileSubtitleStyle(),
-                        ),
-                        value: _autoRecord,
-                        onChanged: (v) => setState(() => _autoRecord = v),
-                        activeThumbColor: context.colors.primary,
-                        contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 20),
-                      ),
-                      Divider(height: 1, indent: 20, endIndent: 20),
-                      SwitchListTile(
-                        title: Text(
-                          'Send summaries to group',
-                          style: _tileTextStyle(),
-                        ),
-                        subtitle: Text(
-                          'Automatically share Context Threads with group members',
-                          style: _tileSubtitleStyle(),
-                        ),
-                        value: _sendSummaries,
-                        onChanged: (v) => setState(() => _sendSummaries = v),
-                        activeThumbColor: context.colors.primary,
-                        contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 20),
-                      ),
-                    ],
-                  ),
-                  SizedBox(height: 12),
-
-                  // ── Integrations ──
-                  _buildSectionHeader('INTEGRATIONS'),
-                  _buildSection(
-                    children: [
                       ListTile(
                         leading: Container(
                           width: 40,
                           height: 40,
                           decoration: BoxDecoration(
                             color: context.colors.background,
-                            borderRadius:
-                                BorderRadius.circular(AppRadius.sm),
+                            borderRadius: BorderRadius.circular(AppRadius.sm),
                           ),
-                          child: Icon(Icons.videocam,
-                              color: context.colors.primary, size: 22),
+                          child: Icon(Icons.devices, color: context.colors.primary, size: 22),
                         ),
-                        title: Text(
-                          'Google Meet',
-                          style: _tileTextStyle(),
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Container(
-                              width: 8,
-                              height: 8,
-                              decoration: BoxDecoration(
-                                color: context.colors.accent,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                            SizedBox(width: 6),
-                            Text(
-                              'Connected',
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 13,
-                                fontWeight: FontWeight.w600,
-                                color: context.colors.accent,
-                              ),
-                            ),
-                          ],
-                        ),
-                        contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 20),
-                      ),
-                      Divider(height: 1, indent: 20, endIndent: 20),
-                      SwitchListTile(
-                        title: Text(
-                          'Google Calendar sync',
-                          style: _tileTextStyle(),
-                        ),
-                        subtitle: Text(
-                          'Import meetings from your Google Calendar',
-                          style: _tileSubtitleStyle(),
-                        ),
-                        value: _calendarSync,
-                        onChanged: (v) => setState(() => _calendarSync = v),
-                        activeThumbColor: context.colors.primary,
-                        contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 20),
+                        title: Text('Test Devices', style: _tileTextStyle()),
+                        subtitle: Text('Check your camera and microphone', style: _tileSubtitleStyle()),
+                        trailing: Icon(Icons.chevron_right, color: context.colors.textLight),
+                        onTap: () {
+                          context.push('/pre-join/test-room', extra: {
+                            'title': 'Device Test',
+                            'groupId': '',
+                          });
+                        },
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20),
                       ),
                     ],
                   ),
                   SizedBox(height: 12),
 
-                  // ── AI Preferences ──
-                  _buildSectionHeader('AI PREFERENCES'),
+                  // ── Appearance ──
+                  _buildSectionHeader('APPEARANCE'),
+                  _buildSection(
+                    children: [
+                      _buildThemeOption(ThemeMode.system, 'System', 'Match your device setting'),
+                      Divider(height: 1, indent: 20, endIndent: 20),
+                      _buildThemeOption(ThemeMode.light, 'Light', ''),
+                      Divider(height: 1, indent: 20, endIndent: 20),
+                      _buildThemeOption(ThemeMode.dark, 'Dark', ''),
+                    ],
+                  ),
+                  SizedBox(height: 12),
+
+                  // ── Account ──
+                  _buildSectionHeader('ACCOUNT'),
                   _buildSection(
                     children: [
                       ListTile(
                         title: Text(
-                          'Summary detail level',
-                          style: _tileTextStyle(),
-                        ),
-                        trailing: Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: context.colors.background,
-                            borderRadius:
-                                BorderRadius.circular(AppRadius.sm),
-                            border: Border.all(color: context.colors.border),
-                          ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: _summaryLevel,
-                              isDense: true,
-                              icon: Icon(Icons.expand_more,
-                                  size: 18, color: context.colors.textMuted),
-                              style: GoogleFonts.plusJakartaSans(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
-                                color: context.colors.textMain,
-                              ),
-                              items: ['Concise', 'Detailed', 'Comprehensive']
-                                  .map((level) => DropdownMenuItem(
-                                        value: level,
-                                        child: Text(level),
-                                      ))
-                                  .toList(),
-                              onChanged: (v) {
-                                if (v != null) {
-                                  setState(() => _summaryLevel = v);
-                                }
-                              },
-                            ),
-                          ),
-                        ),
-                        contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 20),
-                      ),
-                      Divider(height: 1, indent: 20, endIndent: 20),
-                      SwitchListTile(
-                        title: Text(
-                          'Speaker attribution',
-                          style: _tileTextStyle(),
+                          'Delete Account',
+                          style: _tileTextStyle().copyWith(color: Colors.redAccent),
                         ),
                         subtitle: Text(
-                          'Attribute quotes and actions to specific speakers',
+                          'Permanently delete your account and profile data',
                           style: _tileSubtitleStyle(),
                         ),
-                        value: _speakerAttribution,
-                        onChanged: (v) =>
-                            setState(() => _speakerAttribution = v),
-                        activeThumbColor: context.colors.primary,
-                        contentPadding:
-                            const EdgeInsets.symmetric(horizontal: 20),
-                      ),
-                      Divider(height: 1, indent: 20, endIndent: 20),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Custom Vocabulary',
-                              style: _tileTextStyle(),
-                            ),
-                            SizedBox(height: 4),
-                            Text(
-                              'Ensure AI transcribes company jargon perfectly',
-                              style: _tileSubtitleStyle(),
-                            ),
-                            SizedBox(height: 12),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                _buildVocabChip('Stitch'),
-                                _buildVocabChip('Convene'),
-                                _buildVocabChip('PRD'),
-                                ActionChip(
-                                  backgroundColor: context.colors.background,
-                                  side: BorderSide(color: context.colors.primary.withValues(alpha: 0.5)),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.full)),
-                                  label: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.add, size: 16, color: context.colors.primary),
-                                      SizedBox(width: 4),
-                                      Text(
-                                        'Add',
-                                        style: GoogleFonts.plusJakartaSans(
-                                          fontSize: 13,
-                                          fontWeight: FontWeight.w700,
-                                          color: context.colors.primary,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  onPressed: () {},
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
+                        trailing: _isDeletingAccount
+                            ? SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(strokeWidth: 2, color: Colors.redAccent),
+                              )
+                            : null,
+                        onTap: _isDeletingAccount ? null : _confirmDeleteAccount,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20),
                       ),
                     ],
                   ),
@@ -363,11 +209,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   _buildSection(
                     children: [
                       ListTile(
-                        title: Text('App Version', style: _tileTextStyle()),
+                        title: Text('Build', style: _tileTextStyle()),
+                        subtitle: Text(
+                          'If this doesn\'t match what you were just given, you\'re on a stale cached/old build.',
+                          style: _tileSubtitleStyle(),
+                        ),
                         trailing: Text(
-                          '1.0.0',
+                          kBuildStamp,
                           style: GoogleFonts.plusJakartaSans(
-                            fontSize: 14,
+                            fontSize: 12,
                             fontWeight: FontWeight.w500,
                             color: context.colors.textMuted,
                           ),
@@ -377,11 +227,29 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       ),
                       Divider(height: 1, indent: 20, endIndent: 20),
                       ListTile(
+                        title: Text('How Convene works', style: _tileTextStyle()),
+                        subtitle: Text('Replay the intro tutorial', style: _tileSubtitleStyle()),
+                        trailing: Icon(Icons.chevron_right, color: context.colors.textLight),
+                        onTap: () {
+                          Navigator.of(context).push(MaterialPageRoute(
+                            builder: (_) => const OnboardingScreen(replayMode: true),
+                          ));
+                        },
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+                      ),
+                      Divider(height: 1, indent: 20, endIndent: 20),
+                      ListTile(
                         title: Text('Terms of Service',
                             style: _tileTextStyle()),
                         trailing: Icon(Icons.chevron_right,
                             color: context.colors.textLight),
-                        onTap: () {},
+                        onTap: () => _showLegalDialog(
+                          'Terms of Service',
+                          'Convene is currently in private testing. By using this build you '
+                              'agree that features and data may change or be reset without '
+                              'notice. A finalized Terms of Service will be published before '
+                              'any public release.',
+                        ),
                         contentPadding:
                             const EdgeInsets.symmetric(horizontal: 20),
                       ),
@@ -391,7 +259,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             style: _tileTextStyle()),
                         trailing: Icon(Icons.chevron_right,
                             color: context.colors.textLight),
-                        onTap: () {},
+                        onTap: () => _showLegalDialog(
+                          'Privacy Policy',
+                          'Convene stores your name, email, meetings, and AI-generated '
+                              'summaries in Firebase, visible only to you and the other '
+                              'participants/group members on each meeting. Meeting audio is '
+                              'processed to generate summaries and deleted afterward; '
+                              'transcripts are kept for 30 days. A finalized Privacy Policy '
+                              'will be published before any public release.',
+                        ),
                         contentPadding:
                             const EdgeInsets.symmetric(horizontal: 20),
                       ),
@@ -498,21 +374,132 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
   }
 
-  Widget _buildVocabChip(String label) {
-    return Chip(
-      backgroundColor: context.colors.primaryLight.withValues(alpha: 0.3),
-      side: BorderSide.none,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.full)),
-      label: Text(
-        label,
-        style: GoogleFonts.plusJakartaSans(
-          fontSize: 13,
-          fontWeight: FontWeight.w600,
-          color: context.colors.primary,
-        ),
+  void _showLegalDialog(String title, String body) {
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(child: Text(body)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text('Close'),
+          ),
+        ],
       ),
-      onDeleted: () {},
-      deleteIcon: Icon(Icons.close, size: 16, color: context.colors.primary),
     );
+  }
+
+  Future<void> _editProfile(String currentName) async {
+    final controller = TextEditingController(text: currentName);
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Edit Profile'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: InputDecoration(hintText: 'Display name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (newName == null || newName.isEmpty || newName == currentName || !mounted) return;
+
+    try {
+      final authUser = ref.read(authRepositoryProvider).currentUser;
+      if (authUser == null) return;
+      await authUser.updateDisplayName(newName);
+      await authUser.reload();
+      final refreshed = ref.read(authRepositoryProvider).currentUser;
+      if (refreshed != null) {
+        await ref.read(firestoreRepositoryProvider).createUser(AppUser(
+              id: refreshed.uid,
+              name: newName,
+              email: refreshed.email ?? '',
+              avatarUrl: refreshed.photoURL,
+              isSelf: true,
+            ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update profile: $e')),
+        );
+      }
+    }
+  }
+
+  Widget _buildThemeOption(ThemeMode mode, String label, String subtitle) {
+    final currentMode = ref.watch(themeModeProvider);
+    return RadioListTile<ThemeMode>(
+      value: mode,
+      groupValue: currentMode,
+      onChanged: (v) {
+        if (v != null) {
+          ref.read(themeModeProvider.notifier).setThemeMode(v);
+        }
+      },
+      activeColor: context.colors.primary,
+      title: Text(label, style: _tileTextStyle()),
+      subtitle: subtitle.isNotEmpty ? Text(subtitle, style: _tileSubtitleStyle()) : null,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+    );
+  }
+
+  Future<void> _confirmDeleteAccount() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text('Delete Account?'),
+        content: Text(
+          'This permanently deletes your profile. Groups, meetings, and threads you were part of will remain visible to other members. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text('Delete', style: TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isDeletingAccount = true);
+    try {
+      final authRepo = ref.read(authRepositoryProvider);
+      final uid = authRepo.currentUser?.uid;
+      if (uid != null) {
+        await ref.read(firestoreRepositoryProvider).deleteUser(uid);
+      }
+      await authRepo.deleteAccount();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(
+            e.toString().contains('requires-recent-login')
+                ? 'For security, please sign out and sign back in, then try again.'
+                : 'Failed to delete account: $e',
+          )),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isDeletingAccount = false);
+    }
   }
 }

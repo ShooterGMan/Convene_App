@@ -1,31 +1,37 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'dart:io';
-
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:livekit_client/livekit_client.dart';
 
 import '../../models/user.dart';
+import '../../providers/auth_provider.dart';
 import '../../repositories/firestore_repository.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/waveform_visualizer.dart';
-import '../../services/audio_recorder_service.dart';
-import '../../services/gemini_service.dart';
 import '../thread/context_thread_screen.dart';
 
+/// Records an in-person / solo session by joining an audio-only LiveKit room.
+/// A server-side egress bot (see functions/src/webhook.ts) records the room and
+/// generates the summary automatically once the session ends - this screen never
+/// touches the audio itself, it just joins, waits, and watches Firestore for the
+/// resulting thread.
 class ActiveRecordingScreen extends ConsumerStatefulWidget {
   final String meetingTitle;
   final String meetingId;
   final List<AppUser> participants;
+  final String? groupId;
 
   const ActiveRecordingScreen({
     super.key,
     required this.meetingTitle,
     required this.meetingId,
     required this.participants,
+    this.groupId,
   });
 
   @override
@@ -33,40 +39,90 @@ class ActiveRecordingScreen extends ConsumerStatefulWidget {
 }
 
 class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
+  final Room _room = Room();
+  EventsListener<RoomEvent>? _roomListener;
   Timer? _timer;
   int _elapsedSeconds = 0;
+  bool _isConnecting = true;
   bool _isEnding = false;
   bool _markedImportant = false;
+  String? _connectError;
+
+  StreamSubscription? _meetingSub;
+  Timer? _summaryTimeoutTimer;
 
   @override
   void initState() {
     super.initState();
-    _startRecording();
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!_isEnding && mounted) {
-        setState(() => _elapsedSeconds++);
-      }
-    });
+    debugPrint('[REC] initState meetingId=${widget.meetingId}');
+    _connect();
   }
 
-  Future<void> _startRecording() async {
+  Future<void> _connect() async {
+    debugPrint('[REC] requesting LiveKit token...');
     try {
-      final audioService = ref.read(audioRecorderServiceProvider);
-      await audioService.startRecording(widget.meetingId);
+      final result = await FirebaseFunctions.instance.httpsCallable('getLivekitToken').call({
+        'meetingId': widget.meetingId,
+        'groupId': widget.groupId,
+        'displayName': ref.read(appUserProvider).name,
+      });
+      final String token = result.data['token'];
+      const String livekitUrl = "wss://convene-app-a9liwgoq.livekit.cloud";
+      debugPrint('[REC] token received, connecting to $livekitUrl room=${widget.meetingId}');
+
+      _roomListener = _room.createListener();
+      _roomListener!
+        ..on<RoomConnectedEvent>((e) => debugPrint('[REC] RoomConnectedEvent'))
+        ..on<RoomDisconnectedEvent>((e) => debugPrint('[REC] RoomDisconnectedEvent reason=${e.reason}'))
+        ..on<RoomReconnectingEvent>((e) => debugPrint('[REC] RoomReconnectingEvent'))
+        ..on<RoomReconnectedEvent>((e) => debugPrint('[REC] RoomReconnectedEvent'))
+        ..on<LocalTrackPublishedEvent>((e) => debugPrint('[REC] LocalTrackPublishedEvent sid=${e.publication.sid} kind=${e.publication.kind} muted=${e.publication.muted}'))
+        ..on<LocalTrackUnpublishedEvent>((e) => debugPrint('[REC] LocalTrackUnpublishedEvent sid=${e.publication.sid}'))
+        ..on<ParticipantConnectedEvent>((e) => debugPrint('[REC] ParticipantConnectedEvent ${e.participant.identity}'))
+        ..on<ParticipantDisconnectedEvent>((e) => debugPrint('[REC] ParticipantDisconnectedEvent ${e.participant.identity}'));
+
+      await _room.connect(livekitUrl, token);
+      debugPrint('[REC] connect() returned. room.connectionState=${_room.connectionState}');
+
+      await _room.localParticipant?.setMicrophoneEnabled(true);
+      debugPrint('[REC] setMicrophoneEnabled(true) returned.');
+
+      final localTracks = _room.localParticipant?.trackPublications.values.toList() ?? [];
+      debugPrint('[REC] local track publications count=${localTracks.length}');
+      for (final pub in localTracks) {
+        debugPrint('[REC]   track sid=${pub.sid} kind=${pub.kind} source=${pub.source} muted=${pub.muted} subscribed=${pub.subscribed}');
+      }
+
+      if (!mounted) {
+        debugPrint('[REC] WARNING: widget unmounted immediately after connect - navigated away already?');
+        return;
+      }
+      setState(() => _isConnecting = false);
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (!_isEnding && mounted) {
+          setState(() => _elapsedSeconds++);
+        }
+      });
     } catch (e) {
-      debugPrint('Failed to start recording: $e');
+      debugPrint('[REC] Failed to start recording session: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to start recording: $e')),
-        );
+        setState(() {
+          _isConnecting = false;
+          _connectError = e.toString();
+        });
       }
     }
   }
 
   @override
   void dispose() {
+    debugPrint('[REC] dispose() called - room.connectionState=${_room.connectionState}');
     _timer?.cancel();
-    ref.read(audioRecorderServiceProvider).dispose();
+    _meetingSub?.cancel();
+    _summaryTimeoutTimer?.cancel();
+    _roomListener?.dispose();
+    _room.disconnect();
+    _room.dispose();
     super.dispose();
   }
 
@@ -79,49 +135,79 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
   Future<void> _endSession() async {
     setState(() => _isEnding = true);
     _timer?.cancel();
-    
+
     try {
-      final audioService = ref.read(audioRecorderServiceProvider);
-      final geminiService = ref.read(geminiServiceProvider);
-      
-      final filePath = await audioService.stopRecording();
-      if (filePath == null) {
-        throw Exception("No audio file recorded");
-      }
+      // We're always the sole participant here, so it's safe to finalize the
+      // egress immediately instead of waiting on LiveKit's empty-room timeout.
+      final result = await FirebaseFunctions.instance.httpsCallable('stopMeetingEgress').call({
+        'meetingId': widget.meetingId,
+      });
+      await _room.disconnect();
 
-      // Process with Gemini
-      final thread = await geminiService.processMeetingAudio(filePath, widget.meetingTitle, widget.participants);
-
-      // Save to Firestore
-      await ref.read(firestoreRepositoryProvider).createThread(thread);
-
-      // Clean up local audio file
-      try {
-        final file = File(filePath);
-        if (await file.exists()) {
-          await file.delete();
+      final stoppedCount = result.data['stopped'] as int? ?? 0;
+      if (stoppedCount == 0) {
+        // No recording was ever running for this session (e.g. it ended almost
+        // instantly) - there's nothing to summarize, so don't leave the user
+        // waiting on a summary that will never arrive.
+        if (mounted) {
+          setState(() => _isEnding = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Session ended before any audio was captured - nothing to summarize.')),
+          );
+          Navigator.of(context).pop();
         }
-      } catch (e) {
-        debugPrint('Failed to delete raw audio: $e');
+        return;
       }
 
-      if (mounted) {
-        // Push Replacement to avoid coming back to recording
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(
-            builder: (_) => ContextThreadScreen(threadId: thread.id),
-          ),
-        );
-      }
+      _watchForSummary();
     } catch (e) {
-      debugPrint('Failed to process session: $e');
+      debugPrint('Failed to end session: $e');
       if (mounted) {
-        setState(() => _isEnding = false); // revert state on failure
+        setState(() => _isEnding = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to process recording: $e')),
+          SnackBar(content: Text('Failed to end session: $e')),
         );
       }
     }
+  }
+
+  void _watchForSummary() {
+    final repo = ref.read(firestoreRepositoryProvider);
+    _meetingSub = repo.streamMeeting(widget.meetingId).listen((meeting) {
+      if (!mounted || meeting == null) return;
+
+      if (meeting.threadId != null) {
+        _summaryTimeoutTimer?.cancel();
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute(
+            builder: (_) => ContextThreadScreen(threadId: meeting.threadId!),
+          ),
+        );
+        return;
+      }
+
+      if (meeting.summaryError != null) {
+        _summaryTimeoutTimer?.cancel();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Summary generation failed for this session.')),
+        );
+        Navigator.of(context).pop();
+      }
+    });
+
+    // Summarization normally takes well under a minute; if it's still not
+    // ready after two, let the user leave instead of staring at a spinner -
+    // the thread will still show up in their group once it finishes.
+    _summaryTimeoutTimer = Timer(const Duration(minutes: 2), () {
+      if (mounted && _isEnding) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Still generating your summary - it will appear in the group shortly.'),
+          ),
+        );
+        Navigator.of(context).pop();
+      }
+    });
   }
 
   @override
@@ -144,7 +230,17 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
           ),
 
           // Main content
-          if (_isEnding)
+          if (_connectError != null)
+            _ConnectErrorOverlay(error: _connectError!, onRetry: () {
+              setState(() {
+                _connectError = null;
+                _isConnecting = true;
+              });
+              _connect();
+            })
+          else if (_isConnecting)
+            const Center(child: CircularProgressIndicator())
+          else if (_isEnding)
             _GeneratingOverlay()
           else
             SafeArea(
@@ -199,11 +295,9 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
 
                     SizedBox(height: 40),
 
-                    // Waveform visualizer
-                    WaveformVisualizer(
-                      height: 128,
-                      amplitudeStream: ref.watch(audioRecorderServiceProvider).amplitudeStream,
-                    )
+                    // Waveform visualizer (decorative - actual audio is handled
+                    // server-side by the egress bot, not on this device)
+                    WaveformVisualizer(height: 128)
                         .animate()
                         .fadeIn(duration: 600.ms, delay: 300.ms),
 
@@ -211,8 +305,16 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
 
                     // Mark Important button
                     GestureDetector(
-                      onTap: () {
-                        setState(() => _markedImportant = !_markedImportant);
+                      onTap: () async {
+                        final newValue = !_markedImportant;
+                        setState(() => _markedImportant = newValue);
+                        try {
+                          await ref
+                              .read(firestoreRepositoryProvider)
+                              .setMeetingImportant(widget.meetingId, newValue);
+                        } catch (e) {
+                          if (mounted) setState(() => _markedImportant = !newValue);
+                        }
                       },
                       child: AnimatedContainer(
                         duration: 200.ms,
@@ -420,6 +522,50 @@ class _GeneratingOverlay extends StatelessWidget {
               .animate()
               .fadeIn(duration: 400.ms, delay: 300.ms),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Connect Error Overlay ─────────────────────────────────
+class _ConnectErrorOverlay extends StatelessWidget {
+  final String error;
+  final VoidCallback onRetry;
+
+  const _ConnectErrorOverlay({required this.error, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline, color: context.colors.error, size: 40),
+            SizedBox(height: 16),
+            Text(
+              'Failed to start recording session',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: context.colors.textMain,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            SizedBox(height: 8),
+            Text(
+              error,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 13,
+                color: context.colors.textMuted,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            SizedBox(height: 20),
+            ElevatedButton(onPressed: onRetry, child: const Text('Retry')),
+          ],
+        ),
       ),
     );
   }

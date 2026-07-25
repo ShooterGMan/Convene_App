@@ -1,0 +1,142 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isGroupMember(groupId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/groups/$(groupId))
+        && request.auth.uid in get(/databases/$(database)/documents/groups/$(groupId)).data.memberIds;
+    }
+
+    function canAccessThread(threadId) {
+      let t = get(/databases/$(database)/documents/threads/$(threadId)).data;
+      return isSignedIn()
+        && (request.auth.uid in t.participantIds || (t.groupId != null && isGroupMember(t.groupId)));
+    }
+
+    // Users can only see/edit their own profile document.
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+
+      // In-app notifications. Always written server-side (Cloud Functions);
+      // the owner can only mark one read, not create/edit/delete content.
+      match /notifications/{notificationId} {
+        allow read: if isSignedIn() && request.auth.uid == userId;
+        allow update: if isSignedIn() && request.auth.uid == userId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+        allow create, delete: if false;
+      }
+    }
+
+    // Groups are only visible to their members. Creating requires the
+    // creator to include themself as a member; updating requires the
+    // requester to be a member both before and after the write. Membership
+    // changes (invite/accept/decline/join-by-link/remove) always go through
+    // Cloud Functions (Admin SDK, bypasses these rules) so an invited user
+    // can't be added without their own action, and only the creator can
+    // remove someone else.
+    match /groups/{groupId} {
+      allow read: if isSignedIn() && request.auth.uid in resource.data.memberIds;
+      allow create: if isSignedIn() && request.auth.uid in request.resource.data.memberIds;
+      // Members can edit only cosmetic fields directly (currently just the
+      // name). Membership and admin changes (memberIds/members/adminIds) and
+      // deletion ALWAYS go through Cloud Functions (Admin SDK), so a member
+      // can't escalate themselves to admin or add/remove people by writing
+      // the doc directly.
+      allow update: if isSignedIn()
+        && request.auth.uid in resource.data.memberIds
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['name', 'description', 'avatarEmoji']);
+      allow delete: if false;
+
+      // A pending invite is only ever visible to the person it's for.
+      // Always written server-side. Deliberately NOT also matched by a
+      // nested rule here - only the top-level recursive-wildcard rule below
+      // handles this path, since Firestore can reject a `list`/collectionGroup
+      // query as ambiguous/unsafe when two separate match blocks both cover
+      // the same collection, even if either alone would allow a plain get().
+      match /pendingInvites/{invitedUserId} {
+        allow write: if false;
+      }
+    }
+
+    // Single source of truth for pendingInvites access - covers both the
+    // nested path (groups/{groupId}/pendingInvites/{id}) and the
+    // collectionGroup query (used to list "my invites" across every group).
+    //
+    // IMPORTANT: this checks the `invitedUserId` *field*, not the {invitedUserId}
+    // path/doc-ID wildcard. A collectionGroup `list` query is only allowed when
+    // the query's constraints provably satisfy the rule, and the client filters
+    // by `.where('invitedUserId', isEqualTo: uid)` - a field. If the rule keyed
+    // off the doc-ID wildcard instead, single-doc gets would pass but the list
+    // query would be denied outright (which is exactly what happened).
+    match /{path=**}/pendingInvites/{inviteId} {
+      allow read: if isSignedIn() && request.auth.uid == resource.data.invitedUserId;
+    }
+
+    // Meetings are visible to their participants, and to every member of the
+    // group they belong to (so upcoming group meetings show up before anyone
+    // has actually joined).
+    match /meetings/{meetingId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        (resource.data.groupId != null && isGroupMember(resource.data.groupId))
+      );
+      allow create: if isSignedIn() && request.auth.uid in request.resource.data.participantIds;
+      // Every other meeting field is only ever updated server-side (Cloud
+      // Functions, which use the Admin SDK and bypass these rules entirely).
+      // Two exceptions, both scoped to a single field:
+      //  - a participant can flip their own "important" flag
+      //  - a participant OR group member (RSVPs happen before joining) can
+      //    set their own entry in the `rsvps` map, and nobody else's
+      allow update: if isSignedIn()
+        && (request.auth.uid in resource.data.participantIds ||
+            (resource.data.groupId != null && isGroupMember(resource.data.groupId)))
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isImportant', 'rsvps'])
+        && (!('rsvps' in request.resource.data.diff(resource.data).affectedKeys()) ||
+            request.resource.data.rsvps.diff(resource.data.get('rsvps', {})).affectedKeys().hasOnly([request.auth.uid]));
+      allow delete: if false;
+    }
+
+    // Threads (AI summaries) are visible to their participants, and to every
+    // member of the group they belong to. Always written server-side.
+    match /threads/{threadId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        (resource.data.groupId != null && isGroupMember(resource.data.groupId))
+      );
+      allow create, delete: if false;
+      // Everything about a thread is written server-side, except: a
+      // participant/group member can update the `blocks` array (only) to
+      // check off action items - no other field may change in that write.
+      allow update: if isSignedIn()
+        && (request.auth.uid in resource.data.participantIds ||
+            (resource.data.groupId != null && isGroupMember(resource.data.groupId)))
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['blocks']);
+
+      // Comments are the one thing on a thread clients write directly -
+      // anyone who can see the thread can comment on it, as themself only.
+      match /comments/{commentId} {
+        allow read: if canAccessThread(threadId);
+        allow create: if canAccessThread(threadId)
+          && request.resource.data.author.id == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }
+
+    // Transcripts (kept for 30 days, auto-deleted via Firestore TTL). Same
+    // visibility as the thread they belong to. Always written server-side.
+    match /transcripts/{meetingId} {
+      allow read: if isSignedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        (resource.data.groupId != null && isGroupMember(resource.data.groupId))
+      );
+      allow write: if false;
+    }
+  }
+}

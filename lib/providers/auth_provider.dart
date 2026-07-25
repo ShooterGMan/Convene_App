@@ -7,10 +7,12 @@ final firebaseAuthProvider = Provider<FirebaseAuth>((ref) {
   return FirebaseAuth.instance;
 });
 
-// StreamProvider that listens to auth state changes (logged in / logged out)
+// StreamProvider that listens to auth state changes (logged in / logged out),
+// as well as profile updates (display name, photo) via userChanges() so
+// edits made in Settings propagate immediately without a full re-login.
 final authStateProvider = StreamProvider<User?>((ref) {
   final auth = ref.watch(firebaseAuthProvider);
-  return auth.authStateChanges();
+  return auth.userChanges();
 });
 
 // Provides the current user directly (null if not logged in)
@@ -19,15 +21,16 @@ final currentUserProvider = Provider<User?>((ref) {
   return authState.value;
 });
 
-// Provides the AppUser for the authenticated user, falling back to an empty user
+// Provides the AppUser for the authenticated user. Callers must only read this
+// once `authStateProvider` has resolved (see the loading gate in main.dart) -
+// it has no real identity to fall back to when nobody is signed in.
 final appUserProvider = Provider<AppUser>((ref) {
   final user = ref.watch(currentUserProvider);
   if (user == null) {
     return const AppUser(
-      id: 'mock-sarah',
-      name: 'Sarah Connor',
-      email: 'sarah@convene.app',
-      avatarUrl: 'https://i.pravatar.cc/150?u=sarah',
+      id: '',
+      name: 'Guest',
+      email: '',
       isSelf: true,
     );
   }

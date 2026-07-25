@@ -15,6 +15,7 @@ class AuthRepository {
   final FirestoreRepository _firestoreRepo;
   bool _isGoogleSignInInitialized = false;
   g_sign_in.GoogleSignInAccount? _googleUser;
+  String? _webAccessToken;
 
   AuthRepository(this._auth, this._firestoreRepo);
 
@@ -31,15 +32,29 @@ class AuthRepository {
 
   Future<void> signInWithEmailAndPassword(String email, String password) async {
     try {
-      await _auth.signInWithEmailAndPassword(email: email, password: password);
+      final creds = await _auth.signInWithEmailAndPassword(email: email, password: password);
+      // Ensure a Firestore user doc exists even for accounts created before
+      // we started writing one (or via a path that skipped it).
+      if (creds.user != null) {
+        await _saveUserToFirestore(creds.user!);
+      }
     } catch (e) {
       throw Exception('Failed to sign in: $e');
     }
   }
 
-  Future<void> createUserWithEmailAndPassword(String email, String password) async {
+  Future<void> createUserWithEmailAndPassword(String email, String password, {String? displayName}) async {
     try {
-      await _auth.createUserWithEmailAndPassword(email: email, password: password);
+      final creds = await _auth.createUserWithEmailAndPassword(email: email, password: password);
+      final user = creds.user;
+      if (user != null) {
+        final name = displayName?.trim();
+        if (name != null && name.isNotEmpty) {
+          await user.updateDisplayName(name);
+          await user.reload();
+        }
+        await _saveUserToFirestore(_auth.currentUser ?? user, fallbackName: name);
+      }
     } catch (e) {
       throw Exception('Failed to create user: $e');
     }
@@ -52,6 +67,12 @@ class AuthRepository {
         googleProvider.addScope('email');
         googleProvider.addScope('https://www.googleapis.com/auth/calendar.events');
         final creds = await _auth.signInWithPopup(googleProvider);
+        
+        final oauthCred = creds.credential as OAuthCredential?;
+        if (oauthCred != null && oauthCred.accessToken != null) {
+          _webAccessToken = oauthCred.accessToken;
+        }
+
         if (creds.user != null) {
           await _saveUserToFirestore(creds.user!);
         }
@@ -89,10 +110,19 @@ class AuthRepository {
     }
   }
 
-  Future<void> _saveUserToFirestore(User firebaseUser) async {
+  Future<void> _saveUserToFirestore(User firebaseUser, {String? fallbackName}) async {
+    // Prefer the auth display name; fall back to a name passed at signup, then
+    // to the email's local part, so a user is never stored as "Unknown" (which
+    // also fed the "Speaker 1/2" attribution problem in summaries).
+    final emailLocalPart = (firebaseUser.email ?? '').split('@').first;
+    final name = (firebaseUser.displayName?.trim().isNotEmpty ?? false)
+        ? firebaseUser.displayName!.trim()
+        : (fallbackName != null && fallbackName.trim().isNotEmpty)
+            ? fallbackName.trim()
+            : (emailLocalPart.isNotEmpty ? emailLocalPart : 'User');
     final appUser = AppUser(
       id: firebaseUser.uid,
-      name: firebaseUser.displayName ?? 'Unknown',
+      name: name,
       email: firebaseUser.email ?? '',
       avatarUrl: firebaseUser.photoURL,
     );
@@ -100,6 +130,27 @@ class AuthRepository {
   }
 
   Future<String?> getGoogleAccessToken() async {
+    if (kIsWeb) {
+      if (_webAccessToken != null) return _webAccessToken;
+      
+      // If token is missing (e.g., after page reload), we can attempt to get it via a popup
+      // This will usually auto-close if the user is already authorized
+      try {
+        final googleProvider = GoogleAuthProvider();
+        googleProvider.addScope('email');
+        googleProvider.addScope('https://www.googleapis.com/auth/calendar.events');
+        final creds = await _auth.signInWithPopup(googleProvider);
+        final oauthCred = creds.credential as OAuthCredential?;
+        if (oauthCred != null && oauthCred.accessToken != null) {
+          _webAccessToken = oauthCred.accessToken;
+          return _webAccessToken;
+        }
+      } catch (e) {
+        print('Could not refresh web access token: $e');
+      }
+      return null;
+    }
+
     if (_googleUser != null) {
       final client = _googleUser!.authorizationClient;
       final authz = await client.authorizationForScopes([
@@ -114,5 +165,14 @@ class AuthRepository {
 
   Future<void> signOut() async {
     await _auth.signOut();
+  }
+
+  /// Deletes the signed-in Firebase Auth user. Throws a FirebaseAuthException
+  /// with code `requires-recent-login` if the session is too old - Firebase
+  /// requires a fresh sign-in before allowing account deletion.
+  Future<void> deleteAccount() async {
+    final user = _auth.currentUser;
+    if (user == null) return;
+    await user.delete();
   }
 }
