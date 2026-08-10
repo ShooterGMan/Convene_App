@@ -99,7 +99,7 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
   Future<void> _connectToRoom() async {
     _room = Room();
     try {
-      final functions = FirebaseFunctions.instance;
+      final functions = FirebaseFunctions.instanceFor(region: 'asia-south1');
       final result = await functions.httpsCallable('getLivekitToken').call({
         'meetingId': widget.meetingId,
         'groupId': widget.groupId,
@@ -184,7 +184,42 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
   void _leaveMeeting() {
     final isLastParticipant = _room.remoteParticipants.isEmpty;
 
-    if (isLastParticipant) {
+    // Only interrupt with a confirmation when leaving actually ends the
+    // recording for everyone (i.e. you're the last one here). If others are
+    // still in the room, leaving is low-stakes - just go.
+    if (!isLastParticipant) {
+      _performLeave(stopRecording: false);
+      return;
+    }
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('Leave and end recording?'),
+        content: const Text(
+          "You're the last person here. Leaving stops the recording and starts "
+          'generating the AI summary.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: const Text('Stay'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+            onPressed: () {
+              Navigator.of(dialogCtx).pop();
+              _performLeave(stopRecording: true);
+            },
+            child: const Text('Leave'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _performLeave({required bool stopRecording}) {
+    if (stopRecording) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Meeting ended. AI summary is generating in the background...'),
@@ -204,9 +239,29 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
     }
   }
 
+  void _copyInviteLink() {
+    final link = 'https://meeting-app-844aa.web.app/pre-join/${widget.meetingId}';
+    Clipboard.setData(ClipboardData(text: link));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Invite link copied! Share it so others can join.')),
+      );
+    }
+  }
+
+  void _sendReaction(String emoji) {
+    // Show locally immediately so the sender always sees their own reaction
+    // even if the network publish is momentarily unavailable.
+    _showReaction(emoji);
+    final lp = _room.localParticipant;
+    if (lp != null) {
+      lp.publishData(utf8.encode('REACTION:$emoji'), reliable: true);
+    }
+  }
+
   Future<void> _stopEgressInBackground() async {
     try {
-      await FirebaseFunctions.instance.httpsCallable('stopMeetingEgress').call({
+      await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('stopMeetingEgress').call({
         'meetingId': widget.meetingId,
       });
     } catch (e) {
@@ -231,16 +286,17 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        titleSpacing: 8,
+        // Leaving happens only through the deliberate Leave button in the
+        // control bar (which handles egress/confirmation), so suppress the
+        // implicit back arrow that would bypass it.
+        automaticallyImplyLeading: false,
+        titleSpacing: 16,
         title: Row(
-          mainAxisSize: MainAxisSize.min,
           children: [
-            // Compact "recording" indicator - a pulsing red dot + elapsed
-            // time. The old full-width "AI Recording Meeting" pill overflowed
-            // into the action buttons on narrow phones.
+            // Small persistent recording indicator in plain language.
             Container(
-              width: 8,
-              height: 8,
+              width: 9,
+              height: 9,
               decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
             )
                 .animate(onPlay: (c) => c.repeat(reverse: true))
@@ -248,38 +304,25 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
                 .then()
                 .fadeOut(duration: 700.ms),
             const SizedBox(width: 8),
-            Text(
-              _formattedElapsed,
-              style: const TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.bold,
-                fontFeatures: [FontFeature.tabularFigures()],
+            Flexible(
+              child: Text(
+                'Recording for summary',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: context.colors.textMain),
               ),
             ),
-            const SizedBox(width: 8),
-            Icon(Icons.auto_awesome, size: 15, color: context.colors.primary),
+            const SizedBox(width: 10),
+            Text(
+              _formattedElapsed,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: context.colors.textMuted,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
           ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.person_add),
-            tooltip: 'Invite Others',
-            onPressed: () {
-              final link = 'https://meeting-app-844aa.web.app/pre-join/${widget.meetingId}';
-              Clipboard.setData(ClipboardData(text: link));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Meeting link copied! Share it with others to join.'))
-              );
-            },
-          ),
-          const SizedBox(width: 8),
-          IconButton(
-            icon: const Icon(Icons.call_end),
-            color: Colors.red,
-            tooltip: 'End Meeting',
-            onPressed: _leaveMeeting,
-          )
-        ],
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
@@ -290,7 +333,7 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
               Expanded(
                 child: Stack(
                   children: [
-                    VideoGrid(room: _room, isSpeakerView: _isSpeakerView),
+                    VideoGrid(room: _room, isSpeakerView: _isSpeakerView, onCopyInvite: _copyInviteLink),
 
                     // Reactions Overlay
                     if (_currentReaction != null)
@@ -346,107 +389,231 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
     );
   }
 
+  /// Compact floating control bar: only the essentials (mic, camera, share,
+  /// More, Leave). Everything secondary - chat, participants, reactions,
+  /// layout, invite link, recording status - lives behind the More menu so the
+  /// bar stays calm and never overflows on a narrow phone.
   Widget _buildControls(bool isDesktop) {
-    final localParticipant = _room.localParticipant;
-    if (localParticipant == null) return const SizedBox.shrink();
+    final lp = _room.localParticipant;
+    if (lp == null) return const SizedBox.shrink();
 
     return ClipRRect(
-      borderRadius: BorderRadius.circular(30),
+      borderRadius: BorderRadius.circular(32),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 24),
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(30),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+            color: Colors.black.withValues(alpha: 0.35),
+            borderRadius: BorderRadius.circular(32),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
           ),
-          child: Wrap(
-            alignment: WrapAlignment.center,
-            spacing: 16,
-            runSpacing: 12,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-          IconButton(
-            icon: Icon(
-              localParticipant.isMicrophoneEnabled() ? Icons.mic : Icons.mic_off,
-              color: Colors.white,
-            ),
-            onPressed: () async {
-              final enabled = localParticipant.isMicrophoneEnabled();
-              await localParticipant.setMicrophoneEnabled(!enabled);
-              setState(() {});
-            },
-          ),
-          IconButton(
-            icon: Icon(
-              localParticipant.isCameraEnabled() ? Icons.videocam : Icons.videocam_off,
-              color: Colors.white,
-            ),
-            onPressed: () async {
-              final enabled = localParticipant.isCameraEnabled();
-              await localParticipant.setCameraEnabled(!enabled);
-              setState(() {});
-            },
-          ),
-          if (_screenShareSupported)
-            IconButton(
-              icon: Icon(
-                localParticipant.isScreenShareEnabled() ? Icons.stop_screen_share : Icons.screen_share,
-                color: Colors.white,
+              _controlButton(
+                icon: lp.isMicrophoneEnabled() ? Icons.mic : Icons.mic_off,
+                tooltip: lp.isMicrophoneEnabled() ? 'Mute' : 'Unmute',
+                background: lp.isMicrophoneEnabled() ? null : Colors.red,
+                onTap: () async {
+                  await lp.setMicrophoneEnabled(!lp.isMicrophoneEnabled());
+                  setState(() {});
+                },
               ),
-              tooltip: 'Share screen',
-              onPressed: () async {
-                final enabled = localParticipant.isScreenShareEnabled();
-                final turningOn = !enabled;
-                // Must be running before capture starts, so start it first;
-                // safe to stop only after capture has actually turned off.
-                if (turningOn) await _setAndroidScreenShareForegroundService(true);
-                try {
-                  await localParticipant.setScreenShareEnabled(turningOn);
-                } finally {
-                  if (!turningOn) await _setAndroidScreenShareForegroundService(false);
-                }
-                setState(() {});
-              },
-            ),
-
-          Container(width: 1, height: 32, color: Colors.grey.shade800),
-
-          // Layout Toggle
-          IconButton(
-            icon: Icon(
-              _isSpeakerView ? Icons.dashboard : Icons.person,
-              color: Colors.white,
-            ),
-            tooltip: 'Toggle Layout',
-            onPressed: () {
-              setState(() => _isSpeakerView = !_isSpeakerView);
-            },
+              const SizedBox(width: 10),
+              _controlButton(
+                icon: lp.isCameraEnabled() ? Icons.videocam : Icons.videocam_off,
+                tooltip: lp.isCameraEnabled() ? 'Stop camera' : 'Start camera',
+                background: lp.isCameraEnabled() ? null : Colors.red,
+                onTap: () async {
+                  await lp.setCameraEnabled(!lp.isCameraEnabled());
+                  setState(() {});
+                },
+              ),
+              if (_screenShareSupported) ...[
+                const SizedBox(width: 10),
+                _controlButton(
+                  icon: lp.isScreenShareEnabled() ? Icons.stop_screen_share : Icons.screen_share,
+                  tooltip: 'Share screen',
+                  background: lp.isScreenShareEnabled() ? Colors.blue : null,
+                  onTap: () async {
+                    final turningOn = !lp.isScreenShareEnabled();
+                    // Must be running before capture starts, so start it first;
+                    // safe to stop only after capture has actually turned off.
+                    if (turningOn) await _setAndroidScreenShareForegroundService(true);
+                    try {
+                      await lp.setScreenShareEnabled(turningOn);
+                    } finally {
+                      if (!turningOn) await _setAndroidScreenShareForegroundService(false);
+                    }
+                    setState(() {});
+                  },
+                ),
+              ],
+              const SizedBox(width: 10),
+              _controlButton(
+                icon: Icons.more_horiz,
+                tooltip: 'More',
+                onTap: () => _showMoreMenu(isDesktop),
+              ),
+              const SizedBox(width: 10),
+              _buildLeaveButton(),
+            ],
           ),
+        ),
+      ),
+    );
+  }
 
-          // Chat Toggle
-          IconButton(
-            icon: Icon(Icons.chat, color: _isChatVisible ? Colors.blue : Colors.white),
-            tooltip: 'Chat',
-            onPressed: () {
+  Widget _controlButton({
+    required IconData icon,
+    required VoidCallback onTap,
+    String? tooltip,
+    Color? background,
+  }) {
+    final button = GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 48,
+        height: 48,
+        decoration: BoxDecoration(
+          color: background ?? Colors.white.withValues(alpha: 0.12),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, color: Colors.white, size: 22),
+      ),
+    );
+    return tooltip != null ? Tooltip(message: tooltip, child: button) : button;
+  }
+
+  /// Leave is clearly distinct (red, labelled) but modestly sized - not an
+  /// alarming full-width button.
+  Widget _buildLeaveButton() {
+    return Tooltip(
+      message: 'Leave meeting',
+      child: GestureDetector(
+        onTap: _leaveMeeting,
+        child: Container(
+          height: 48,
+          padding: const EdgeInsets.symmetric(horizontal: 18),
+          decoration: BoxDecoration(
+            color: Colors.red.shade600,
+            borderRadius: BorderRadius.circular(24),
+          ),
+          child: const Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.call_end, color: Colors.white, size: 20),
+              SizedBox(width: 6),
+              Text('Leave', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 14)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Secondary actions live here so the control bar stays minimal.
+  void _showMoreMenu(bool isDesktop) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.grey.shade900,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
+            ),
+            const SizedBox(height: 16),
+            // Recording status, spelled out plainly.
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Row(
+                children: [
+                  Container(
+                    width: 9,
+                    height: 9,
+                    decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Recording for summary', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                        SizedBox(height: 2),
+                        Text('Audio is transcribed to build your AI summary.',
+                            style: TextStyle(color: Colors.white54, fontSize: 12)),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    _formattedElapsed,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontWeight: FontWeight.w700,
+                      fontFeatures: [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: Colors.white24, height: 28),
+            _moreTile(sheetCtx, Icons.person_add, 'Copy invite link', _copyInviteLink),
+            _moreTile(sheetCtx, Icons.forum_rounded, 'Chat & people', () {
               if (isDesktop) {
-                setState(() => _isChatVisible = !_isChatVisible);
+                setState(() => _isChatVisible = true);
               } else {
                 _showMobileChatSheet();
               }
-            },
-          ),
-
-          Container(width: 1, height: 32, color: Colors.grey.shade800),
-
-          // Reactions
-          _buildReactionButton('👍'),
-          _buildReactionButton('❤️'),
-          _buildReactionButton('👏'),
-          _buildReactionButton('😂'),
-        ],
+            }),
+            _moreTile(
+              sheetCtx,
+              _isSpeakerView ? Icons.grid_view_rounded : Icons.person_rounded,
+              _isSpeakerView ? 'Grid view' : 'Speaker view',
+              () => setState(() => _isSpeakerView = !_isSpeakerView),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  for (final emoji in const ['👍', '❤️', '👏', '😂', '🎉', '🙌'])
+                    _sheetReaction(sheetCtx, emoji),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
-    )));
+    );
+  }
+
+  Widget _moreTile(BuildContext sheetCtx, IconData icon, String label, VoidCallback onTap) {
+    return ListTile(
+      leading: Icon(icon, color: Colors.white),
+      title: Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+      onTap: () {
+        Navigator.pop(sheetCtx);
+        onTap();
+      },
+    );
+  }
+
+  Widget _sheetReaction(BuildContext sheetCtx, String emoji) {
+    return GestureDetector(
+      onTap: () {
+        Navigator.pop(sheetCtx);
+        _sendReaction(emoji);
+      },
+      child: Text(emoji, style: const TextStyle(fontSize: 30)),
+    );
   }
 
   void _showMobileChatSheet() {
@@ -480,8 +647,18 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text('Meeting', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
-                if (MediaQuery.of(context).size.width < 800)
-                  IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: () => Navigator.pop(context)),
+                IconButton(
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  onPressed: () {
+                    // Mobile shows the panel as a modal sheet (pop it); desktop
+                    // shows it as an inline side panel (hide via state).
+                    if (MediaQuery.of(context).size.width < 800) {
+                      Navigator.pop(context);
+                    } else {
+                      setState(() => _isChatVisible = false);
+                    }
+                  },
+                ),
               ],
             ),
           ),
@@ -638,28 +815,13 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
     });
   }
 
-  Widget _buildReactionButton(String emoji) {
-    return IconButton(
-      icon: Text(emoji, style: const TextStyle(fontSize: 24)),
-      onPressed: () {
-        // Show locally immediately so the sender always sees their own
-        // reaction even if the network publish is momentarily unavailable.
-        _showReaction(emoji);
-        // Broadcast to others (reliable so it isn't dropped).
-        final lp = _room.localParticipant;
-        if (lp != null) {
-          final data = utf8.encode('REACTION:$emoji');
-          lp.publishData(data, reliable: true);
-        }
-      },
-    );
-  }
 }
 
 class VideoGrid extends StatefulWidget {
   final Room room;
   final bool isSpeakerView;
-  const VideoGrid({super.key, required this.room, required this.isSpeakerView});
+  final VoidCallback? onCopyInvite;
+  const VideoGrid({super.key, required this.room, required this.isSpeakerView, this.onCopyInvite});
 
   @override
   State<VideoGrid> createState() => _VideoGridState();
@@ -823,23 +985,43 @@ class _VideoGridState extends State<VideoGrid> {
         children: [
           Expanded(child: grid),
           Padding(
-            padding: const EdgeInsets.only(bottom: 96, left: 24, right: 24),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            padding: const EdgeInsets.only(bottom: 110, left: 24, right: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54),
+                    ),
+                    const SizedBox(width: 10),
+                    Flexible(
+                      child: Text(
+                        "You're the only one here.",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 10),
-                Flexible(
-                  child: Text(
-                    'Waiting for others to join. Share the invite link from the top bar.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13),
+                if (widget.onCopyInvite != null) ...[
+                  const SizedBox(height: 14),
+                  ElevatedButton.icon(
+                    onPressed: widget.onCopyInvite,
+                    icon: const Icon(Icons.link_rounded, size: 18),
+                    label: const Text('Copy invite link'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white.withValues(alpha: 0.15),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -889,12 +1071,10 @@ class _VideoWidgetState extends State<VideoWidget> {
     final isScreenShare = videoTrack != null;
     final isSpeaking = widget.participant.isSpeaking;
 
-    if (videoTrack == null) {
-      videoTrack = widget.participant.videoTrackPublications
-          .where((p) => p.source == TrackSource.camera)
-          .firstOrNull?.track as VideoTrack?;
-    }
-    
+    videoTrack ??= widget.participant.videoTrackPublications
+        .where((p) => p.source == TrackSource.camera)
+        .firstOrNull?.track as VideoTrack?;
+
     // Fallback if no specific source found
     videoTrack ??= widget.participant.videoTrackPublications.firstOrNull?.track as VideoTrack?;
     
@@ -905,8 +1085,8 @@ class _VideoWidgetState extends State<VideoWidget> {
       border: isSpeaking 
           ? Border.all(color: Colors.blueAccent, width: 3)
           : Border.all(color: Colors.transparent, width: 3),
-      boxShadow: isSpeaking 
-          ? [BoxShadow(color: Colors.blueAccent.withOpacity(0.5), blurRadius: 10, spreadRadius: 2)]
+      boxShadow: isSpeaking
+          ? [BoxShadow(color: Colors.blueAccent.withValues(alpha: 0.5), blurRadius: 10, spreadRadius: 2)]
           : [],
     );
 
@@ -973,8 +1153,8 @@ class _VideoWidgetState extends State<VideoWidget> {
           border: isSpeaking 
               ? Border.all(color: Colors.blueAccent, width: 3)
               : Border.all(color: Colors.transparent, width: 3),
-          boxShadow: isSpeaking 
-              ? [BoxShadow(color: Colors.blueAccent.withOpacity(0.5), blurRadius: 10, spreadRadius: 2)]
+          boxShadow: isSpeaking
+              ? [BoxShadow(color: Colors.blueAccent.withValues(alpha: 0.5), blurRadius: 10, spreadRadius: 2)]
               : [],
         ),
         child: Center(

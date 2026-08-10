@@ -7,7 +7,6 @@ import 'firebase_options.dart';
 import 'theme/app_theme.dart';
 import 'navigation/app_router.dart';
 import 'providers/theme_provider.dart';
-import 'providers/auth_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -77,22 +76,16 @@ class ConveneApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Block rendering any real screen until Firebase Auth's first snapshot
-    // arrives - otherwise widgets that read appUserProvider before then would
-    // see "nobody signed in" and briefly attribute data to a fallback identity.
-    final authState = ref.watch(authStateProvider);
     final themeMode = ref.watch(themeModeProvider);
 
-    if (authState.isLoading) {
-      return MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.lightTheme,
-        darkTheme: AppTheme.darkTheme,
-        themeMode: themeMode,
-        home: const Scaffold(body: Center(child: CircularProgressIndicator())),
-      );
-    }
-
+    // IMPORTANT: always use MaterialApp.router - never swap to a plain
+    // MaterialApp while auth loads. On web a plain MaterialApp isn't URL-aware
+    // and consumes the initial deep-link path, so a shared link like
+    // /pre-join/<id> would get lost and dump the user on the home screen.
+    // The auth-loading state is handled inside the router's redirect (it
+    // returns null while loading, then re-runs via refreshListenable once
+    // Firebase Auth resolves), and appUserProvider falls back to an inert
+    // empty "Guest" (id: '') that can't write real data in that brief window.
     return MaterialApp.router(
       title: 'Convene',
       debugShowCheckedModeBanner: false,

@@ -12,7 +12,7 @@ import * as admin from "firebase-admin";
  * A meeting is "stuck" if someone joined (participantIds non-empty) but
  * there's been no activity for 10+ minutes and still no thread/error.
  */
-export const flagStuckMeetings = functions.pubsub.schedule("every 5 minutes").onRun(async () => {
+export const flagStuckMeetings = functions.region("asia-south1").pubsub.schedule("every 5 minutes").onRun(async () => {
   const db = admin.firestore();
   const now = Date.now();
   const staleThreshold = admin.firestore.Timestamp.fromMillis(now - 10 * 60 * 1000);
@@ -33,6 +33,7 @@ export const flagStuckMeetings = functions.pubsub.schedule("every 5 minutes").on
     await doc.ref.set(
       {
         summaryError: "timeout",
+        summaryStatus: "failed",
         summaryErrorAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:google_sign_in/google_sign_in.dart' as g_sign_in;
 import '../providers/auth_provider.dart';
+import '../services/push_notification_service.dart';
 import 'firestore_repository.dart';
 import '../models/user.dart';
 
@@ -164,6 +165,12 @@ class AuthRepository {
   }
 
   Future<void> signOut() async {
+    // Detach this device's push token first (while we still know the uid) so a
+    // shared device doesn't keep receiving the previous user's notifications.
+    final uid = _auth.currentUser?.uid;
+    if (uid != null) {
+      await PushNotificationService.removeTokenOnSignOut(uid);
+    }
     await _auth.signOut();
   }
 

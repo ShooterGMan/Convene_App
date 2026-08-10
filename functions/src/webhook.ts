@@ -5,31 +5,63 @@ import { GoogleGenAI, createPartFromUri } from "@google/genai";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { assertCanJoinMeeting } from "./livekit";
+import { requiredEnv } from "./config";
+import { canStopMeeting } from "./meeting_access";
+import { notifyUser } from "./notifications";
 
-// Keep this secret, it's used to validate that the webhook actually came from LiveKit
-const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || "devkey";
-const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "secret";
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "gemini_secret";
-// Host of your LiveKit Cloud project, e.g. https://convene-app-a9liwgoq.livekit.cloud
-const LIVEKIT_HOST = process.env.LIVEKIT_HOST || "";
-// GCS bucket egress recordings are temporarily uploaded to before being sent to Gemini.
-// Defaults to the project's default Firebase Storage bucket.
-const EGRESS_BUCKET = process.env.EGRESS_BUCKET || `${process.env.GCLOUD_PROJECT}.appspot.com`;
-// LiveKit Cloud's egress workers run outside this GCP project, so they need an explicit
-// service-account key (JSON, as a single-line string) with Storage Object Admin on
-// EGRESS_BUCKET in order to upload recordings there.
-const GCP_EGRESS_CREDENTIALS = process.env.GCP_EGRESS_CREDENTIALS || "";
+// All server-side integration configuration is required. It is read LAZILY
+// (as functions, called inside handlers) and never at module top level:
+// secrets bound via runWith({ secrets }) are only injected at runtime, not
+// during the deploy-time source analysis, so a top-level read would throw and
+// break `firebase deploy`.
+const livekitApiKey = () => requiredEnv("LIVEKIT_API_KEY");
+const livekitApiSecret = () => requiredEnv("LIVEKIT_API_SECRET");
+const geminiApiKey = () => requiredEnv("GEMINI_API_KEY");
+// Host of your LiveKit Cloud project, e.g. https://your-project.livekit.cloud
+const livekitHost = () => requiredEnv("LIVEKIT_HOST");
+// GCS bucket egress recordings are temporarily uploaded to before being sent
+// to Gemini. Explicit so recordings can never silently land elsewhere.
+const egressBucket = () => requiredEnv("EGRESS_BUCKET");
+// LiveKit Cloud's egress workers run outside this GCP project, so they need an
+// explicit service-account key (JSON, one-line string) with Storage Object
+// Admin on the egress bucket in order to upload recordings there.
+const gcpEgressCredentials = () => requiredEnv("GCP_EGRESS_CREDENTIALS");
+const WEBHOOK_SECRETS = [
+  "LIVEKIT_API_KEY",
+  "LIVEKIT_API_SECRET",
+  "GEMINI_API_KEY",
+  "LIVEKIT_HOST",
+  "EGRESS_BUCKET",
+  "GCP_EGRESS_CREDENTIALS",
+];
+// Beta default: record one mixed room-audio stream only. Per-speaker tracks
+// require an additional LiveKit egress for every participant and therefore
+// exceed the practical capacity/cost of the initial user test. Keep the
+// existing implementation behind an explicit opt-in for a later plan upgrade.
+// (Safe to read at top level: this never throws when unset.)
+const ENABLE_SPEAKER_TRACKS = process.env.ENABLE_SPEAKER_TRACKS === "true";
 
-const receiver = new WebhookReceiver(LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
-const egressClient = new EgressClient(LIVEKIT_HOST, LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
+// LiveKit clients are built on first use at runtime (when the secrets exist),
+// not at import time.
+let _receiver: WebhookReceiver | undefined;
+function getReceiver(): WebhookReceiver {
+  if (!_receiver) _receiver = new WebhookReceiver(livekitApiKey(), livekitApiSecret());
+  return _receiver;
+}
+let _egressClient: EgressClient | undefined;
+function getEgressClient(): EgressClient {
+  if (!_egressClient) _egressClient = new EgressClient(livekitHost(), livekitApiKey(), livekitApiSecret());
+  return _egressClient;
+}
 
 /**
  * Single entrypoint for all LiveKit server webhooks. Configure this function's URL
  * as the "Webhook URL" in the LiveKit Cloud project dashboard so both events below fire.
  *
- * - room_started: a room bot pattern - automatically starts a server-side, audio-only
- *   Room Composite Egress the moment the first participant joins. This runs regardless
- *   of which client app/device joins, so summaries don't depend on any participant
+ * - room_started: automatically starts one mixed, audio-only Room Composite
+ *   Egress the moment the first participant joins. This runs regardless of
+ *   which client app/device joins, so summaries don't depend on any participant
  *   opting in to anything.
  * - egress_ended: fired when that recording finishes (i.e. the room emptied out and
  *   egress auto-stopped). Downloads the single mixed-audio file, sends it to Gemini for
@@ -42,9 +74,9 @@ const egressClient = new EgressClient(LIVEKIT_HOST, LIVEKIT_API_KEY, LIVEKIT_API
 // before this code runs if it isn't one - which breaks LiveKit's own webhook signature
 // header (not an OIDC token). Hosting authenticates to the backend with its own
 // credentials instead of forwarding the raw invocation auth, which avoids that check.
-export const livekitWebhook = functions.https.onRequest(async (req, res) => {
+export const livekitWebhook = functions.region("asia-south1").runWith({ secrets: WEBHOOK_SECRETS }).https.onRequest(async (req, res) => {
   try {
-    const event = await receiver.receive(req.body, req.headers.authorization);
+    const event = await getReceiver().receive(req.body, req.headers.authorization);
 
     if (event.event === "room_started") {
       await handleRoomStarted(event.room?.name);
@@ -52,7 +84,7 @@ export const livekitWebhook = functions.https.onRequest(async (req, res) => {
       return;
     }
 
-    if (event.event === "track_published") {
+    if (event.event === "track_published" && ENABLE_SPEAKER_TRACKS) {
       await handleTrackPublished(event.room?.name, event.participant, event.track);
       res.status(200).send("Speaker track handled");
       return;
@@ -77,7 +109,7 @@ export const livekitWebhook = functions.https.onRequest(async (req, res) => {
  * is actually empty (e.g. the last participant leaving) - it stops the egress
  * unconditionally. If no egress is running, it's a no-op.
  */
-export const stopMeetingEgress = functions.https.onCall(async (data, context) => {
+export const stopMeetingEgress = functions.region("asia-south1").runWith({ secrets: WEBHOOK_SECRETS }).https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
   }
@@ -87,7 +119,29 @@ export const stopMeetingEgress = functions.https.onCall(async (data, context) =>
     throw new functions.https.HttpsError("invalid-argument", "meetingId required.");
   }
 
-  await admin.firestore().collection("meetings").doc(meetingId).set(
+  const db = admin.firestore();
+  const meetingRef = await assertCanJoinMeeting(meetingId, context.auth.uid);
+  const meeting = (await meetingRef.get()).data()!;
+  const participantIds = (meeting.participantIds || []) as string[];
+  const organizerId = meeting.participants?.[0]?.id || participantIds[0];
+  let adminIds: string[] = [];
+  if (meeting.groupId) {
+    const group = await db.collection("groups").doc(meeting.groupId).get();
+    adminIds = (group.data()?.adminIds || []) as string[];
+  }
+
+  if (!canStopMeeting(
+    { groupId: meeting.groupId, participantIds, organizerId },
+    context.auth.uid,
+    adminIds
+  )) {
+    throw new functions.https.HttpsError(
+      "permission-denied",
+      "Only the meeting organizer or a group admin can stop the recording."
+    );
+  }
+
+  await meetingRef.set(
     { lastActivityAt: admin.firestore.FieldValue.serverTimestamp() },
     { merge: true }
   );
@@ -95,30 +149,39 @@ export const stopMeetingEgress = functions.https.onCall(async (data, context) =>
   // Egress starts asynchronously off the room_started webhook, so it may not have
   // started yet if the caller ends the session within a second or two of joining.
   // Give it a couple of short retries before giving up.
-  let active = await egressClient.listEgress({ roomName: meetingId, active: true });
+  let active = await getEgressClient().listEgress({ roomName: meetingId, active: true });
   for (let attempt = 0; active.length === 0 && attempt < 3; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
-    active = await egressClient.listEgress({ roomName: meetingId, active: true });
+    active = await getEgressClient().listEgress({ roomName: meetingId, active: true });
   }
 
-  await Promise.all(active.map((e) => egressClient.stopEgress(e.egressId)));
+  await Promise.all(active.map((e) => getEgressClient().stopEgress(e.egressId)));
   return { stopped: active.length };
 });
 
 export async function handleRoomStarted(roomName?: string) {
   if (!roomName) return;
 
+  await admin.firestore().collection("meetings").doc(roomName).set(
+    {
+      summaryStatus: "recording",
+      summaryError: admin.firestore.FieldValue.delete(),
+      lastActivityAt: admin.firestore.FieldValue.serverTimestamp(),
+    },
+    { merge: true }
+  );
+
   // Avoid double-starting egress if room_started fires more than once for the same room.
-  const active = await egressClient.listEgress({ roomName, active: true });
+  const active = await getEgressClient().listEgress({ roomName, active: true });
   if (active.length > 0) {
     console.log(`Egress already running for room ${roomName}`);
     return;
   }
 
   const objectKey = `egress-tmp/${roomName}-${Date.now()}.ogg`;
-  console.log(`Starting audio-only room composite egress for ${roomName} -> gs://${EGRESS_BUCKET}/${objectKey}`);
+  console.log(`Starting audio-only room composite egress for ${roomName} -> gs://${egressBucket()}/${objectKey}`);
 
-  await egressClient.startRoomCompositeEgress(
+  await getEgressClient().startRoomCompositeEgress(
     roomName,
     {
       file: new EncodedFileOutput({
@@ -127,8 +190,8 @@ export async function handleRoomStarted(roomName?: string) {
         output: {
           case: "gcp",
           value: new GCPUpload({
-            bucket: EGRESS_BUCKET,
-            credentials: GCP_EGRESS_CREDENTIALS,
+            bucket: egressBucket(),
+            credentials: gcpEgressCredentials(),
           }),
         },
       }),
@@ -138,7 +201,7 @@ export async function handleRoomStarted(roomName?: string) {
 }
 
 /**
- * Speaker attribution for online (LiveKit) meetings: rather than rely on
+ * Optional speaker attribution for online (LiveKit) meetings: rather than rely on
  * Gemini to guess who's who from one mixed-down room recording, record each
  * participant's own microphone as a separate labeled file the moment it's
  * published. When the meeting ends, if we have these per-speaker files
@@ -176,7 +239,7 @@ async function handleTrackPublished(roomName?: string, participant?: any, track?
 
   try {
     console.log(`Starting per-speaker audio track for ${name} (${identity}) in room ${roomName}`);
-    await egressClient.startTrackCompositeEgress(
+    await getEgressClient().startTrackCompositeEgress(
       roomName,
       {
         file: new EncodedFileOutput({
@@ -185,8 +248,8 @@ async function handleTrackPublished(roomName?: string, participant?: any, track?
           output: {
             case: "gcp",
             value: new GCPUpload({
-              bucket: EGRESS_BUCKET,
-              credentials: GCP_EGRESS_CREDENTIALS,
+              bucket: egressBucket(),
+              credentials: gcpEgressCredentials(),
             }),
           },
         }),
@@ -247,7 +310,15 @@ export async function handleEgressEnded(egressInfo: any) {
     if (data?.threadId) return false;
     const claimedAt = data?.processingClaimedAt?.toMillis?.();
     if (claimedAt && Date.now() - claimedAt < STALE_CLAIM_MS) return false;
-    tx.set(meetingRef, { processingClaimedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    tx.set(
+      meetingRef,
+      {
+        processingClaimedAt: admin.firestore.FieldValue.serverTimestamp(),
+        summaryStatus: "processing",
+        summaryError: admin.firestore.FieldValue.delete(),
+      },
+      { merge: true }
+    );
     return true;
   });
 
@@ -257,17 +328,19 @@ export async function handleEgressEnded(egressInfo: any) {
   }
 
   const existingMeetingDoc = await meetingRef.get();
+  // Start of processing - used to report time-to-summary (Phase 1.5.4).
+  const processingStartedMs = Date.now();
 
-  console.log(`Processing recording for meeting ${meetingId} from gs://${EGRESS_BUCKET}/${objectKey}`);
+  console.log(`Processing recording for meeting ${meetingId} from gs://${egressBucket()}/${objectKey}`);
 
-  const bucket = admin.storage().bucket(EGRESS_BUCKET);
+  const bucket = admin.storage().bucket(egressBucket());
   const file = bucket.file(objectKey);
   const tmpFilePath = path.join(os.tmpdir(), `${meetingId}-${Date.now()}.ogg`);
   const cleanupPaths: string[] = [tmpFilePath];
   const cleanupFiles: string[] = [objectKey];
 
   try {
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    const ai = new GoogleGenAI({ apiKey: geminiApiKey() });
 
     // Prefer labeled per-speaker recordings if any completed (real name
     // attribution), falling back to the single mixed room recording.
@@ -317,27 +390,66 @@ export async function handleEgressEnded(egressInfo: any) {
     }
 
     const usingSpeakerTracks = !speakerTracksSnapshot.empty && audioParts.length > 1;
+
+    // Attendee roster as a prior for speaker attribution on the single mixed
+    // recording (in-person meetings especially). We can't positively identify
+    // voices, but giving the model the list of people who were expected helps
+    // it use real names where the conversation makes the speaker clear, instead
+    // of defaulting everyone to "Speaker N". Names come from the meeting's
+    // participants plus, for a group meeting, the group's member list.
+    const attendeeNames: string[] = [];
+    if (existingMeetingDoc.exists) {
+      const d = existingMeetingDoc.data();
+      for (const p of (d?.participants || [])) {
+        if (p?.name && typeof p.name === "string" && !attendeeNames.includes(p.name)) {
+          attendeeNames.push(p.name);
+        }
+      }
+      if (d?.groupId) {
+        try {
+          const g = await db.collection("groups").doc(d.groupId).get();
+          for (const m of (g.data()?.members || [])) {
+            if (m?.name && typeof m.name === "string" && !attendeeNames.includes(m.name)) {
+              attendeeNames.push(m.name);
+            }
+          }
+        } catch (rosterErr) {
+          console.error(`Could not load group roster for ${meetingId}:`, rosterErr);
+        }
+      }
+    }
+    const rosterHint = attendeeNames.length > 0
+      ? `The following people were expected to attend: ${attendeeNames.join(", ")}. When the conversation makes it reasonably clear who is speaking, attribute lines to these names. `
+      : "";
+
     const prompt = `
       You are an expert meeting assistant. Analyze the audio of this meeting.
       If the recording is empty or silent, state that no meaningful content was captured.
       ${usingSpeakerTracks
         ? "You have been given separate labeled audio tracks, one per participant, each preceded by a text note naming who it belongs to. Use those exact names when attributing decisions, action items, and transcript lines to specific people."
-        : "This is a single mixed recording of everyone in the meeting. If you can distinguish different speakers by voice, label them Speaker 1, Speaker 2, etc."}
+        : `This is a single mixed recording of everyone in the meeting. ${rosterHint}If you can distinguish different speakers by voice but cannot match them to a name, label them Speaker 1, Speaker 2, etc.`}
       Extract:
-      1. A brief summary of the meeting.
-      2. The main decisions made.
-      3. Action items with assignees if mentioned (use real names when available).
-      4. A full transcript of the meeting, formatted as plain text with speaker
+      1. A brief summary of the meeting (a single "summary" block).
+      2. The main decisions made — ONE "decision" block per distinct decision.
+      3. Action items — ONE "action_item" block per task. If a task is clearly
+         assigned to someone, set "assignee" to that person's FIRST name only
+         (e.g. "Alex"); if it isn't clearly assigned, omit "assignee".
+      4. Optionally, notable "key_insight" blocks for important points that are
+         neither decisions nor action items.
+      5. A full transcript of the meeting, formatted as plain text with speaker
          turns on their own line (e.g. "${usingSpeakerTracks ? "Alex" : "Speaker 1"}: ..."). If the
          recording is empty or silent, use an empty string.
-      Output the result in a structured JSON format matching this schema:
+      Output the result in a structured JSON format matching this schema. Emit a
+      SEPARATE block object for each decision and each action item (do not lump
+      them into one bulleted block):
       {
         "vibe": "Productive & Focused",
         "vibeEmoji": "🚀",
         "blocks": [
-          { "type": "summary", "title": "Summary", "content": "..." },
-          { "type": "decisions", "title": "Decisions", "content": "- ..." },
-          { "type": "action_items", "title": "Action Items", "content": "- ..." }
+          { "type": "summary", "content": "..." },
+          { "type": "decision", "content": "..." },
+          { "type": "action_item", "content": "...", "assignee": "Alex" },
+          { "type": "key_insight", "content": "..." }
         ],
         "transcript": "..."
       }
@@ -364,35 +476,132 @@ export async function handleEgressEnded(egressInfo: any) {
       participantIds = data?.participantIds || participantIds;
     }
 
-    const threadRef = db.collection("threads").doc();
-    const thread = {
-      id: threadRef.id,
-      meetingTitle,
-      groupId,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      participants,
-      participantIds,
-      vibe: parsedResult.vibe,
-      vibeEmoji: parsedResult.vibeEmoji,
-      blocks: parsedResult.blocks,
-    };
+    // A meeting can be attached to an existing topic at scheduling time
+    // (meeting.topicId). If so, append this session's blocks to that topic
+    // instead of creating a new one, so several meetings about the same subject
+    // accumulate into one running topic. Otherwise, create a fresh topic.
+    const targetTopicId: string | null =
+      existingMeetingDoc.exists ? (existingMeetingDoc.data()?.topicId ?? null) : null;
 
-    await threadRef.set(thread);
+    let threadId = "";
+    let isNewTopic = true;
 
-    // If it belongs to a group, update the group's thread list
-    if (groupId) {
-      await db.collection("groups").doc(groupId).update({
-        threadIds: admin.firestore.FieldValue.arrayUnion(thread.id),
+    if (targetTopicId) {
+      const topicRef = db.collection("threads").doc(targetTopicId);
+      const appended = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(topicRef);
+        if (!snap.exists) return false;
+        const existing = snap.data()!;
+        const dateLabel = new Date().toISOString().slice(0, 10);
+        // A divider block makes each appended session visually distinct in the
+        // topic's block list.
+        const dividerBlock = {
+          type: "key_insight",
+          content: `🗓️ New session — ${meetingTitle} · ${dateLabel}`,
+        };
+        const mergedBlocks = [...(existing.blocks || []), dividerBlock, ...(parsedResult.blocks || [])];
+        const mergedParticipantIds = Array.from(
+          new Set([...((existing.participantIds || []) as string[]), ...participantIds])
+        );
+        const byId: Record<string, any> = {};
+        for (const p of [...((existing.participants || []) as any[]), ...participants]) {
+          if (p?.id) byId[p.id] = p;
+        }
+        tx.set(
+          topicRef,
+          {
+            blocks: mergedBlocks,
+            participantIds: mergedParticipantIds,
+            participants: Object.values(byId),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+            lastSessionTitle: meetingTitle,
+          },
+          { merge: true }
+        );
+        return true;
       });
+      if (appended) {
+        threadId = targetTopicId;
+        isNewTopic = false;
+      }
+    }
+
+    if (!threadId) {
+      const threadRef = db.collection("threads").doc();
+      await threadRef.set({
+        id: threadRef.id,
+        meetingTitle,
+        groupId,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        participants,
+        participantIds,
+        vibe: parsedResult.vibe,
+        vibeEmoji: parsedResult.vibeEmoji,
+        blocks: parsedResult.blocks,
+      });
+      threadId = threadRef.id;
+
+      // If it belongs to a group, update the group's thread list
+      if (groupId) {
+        await db.collection("groups").doc(groupId).update({
+          threadIds: admin.firestore.FieldValue.arrayUnion(threadId),
+        });
+      }
     }
 
     await db.collection("meetings").doc(meetingId).set(
       {
-        threadId: thread.id,
+        threadId,
+        summaryStatus: "ready",
         summaryError: admin.firestore.FieldValue.delete(),
       },
       { merge: true }
     );
+
+    // Notify participants their summary is ready, and anyone assigned an action.
+    // Best-effort: a notification failure must never fail the whole summary.
+    try {
+      for (const uid of new Set<string>(participantIds)) {
+        await notifyUser(uid, {
+          type: "summary_ready",
+          title: isNewTopic ? "Summary ready" : "Topic updated",
+          body: `"${meetingTitle}" has a new AI summary.`,
+          route: `/thread/${threadId}`,
+          relatedId: threadId,
+        });
+      }
+      const actionBlocks = ((parsedResult.blocks || []) as any[]).filter(
+        (b) => typeof b?.type === "string" && b.type.includes("action") && b?.assignee
+      );
+      for (const b of actionBlocks) {
+        const assignee = String(b.assignee).trim().toLowerCase();
+        const match = (participants as any[]).find(
+          (p) => typeof p?.name === "string" && p.name.split(" ")[0].toLowerCase() === assignee
+        );
+        if (match?.id) {
+          await notifyUser(match.id, {
+            type: "action_assigned",
+            title: "You were assigned an action",
+            body: b.content,
+            route: `/thread/${threadId}`,
+            relatedId: threadId,
+          });
+        }
+      }
+    } catch (notifyErr) {
+      console.error(`Failed to send summary notifications for ${meetingId}:`, notifyErr);
+    }
+
+    // Structured metric line for observability (Phase 1.5.4). Query in Cloud
+    // Logging on jsonPayload.metric="summary" for success rate + time-to-summary.
+    console.log(JSON.stringify({
+      metric: "summary",
+      status: "ready",
+      meetingId,
+      durationMs: Date.now() - processingStartedMs,
+      usedSpeakerTracks: !speakerTracksSnapshot.empty && audioParts.length > 1,
+      hasTranscript: (parsedResult.transcript || "").trim().length > 0,
+    }));
 
     // Keep the transcript (but not the audio) for 30 days so participants can
     // read back what was actually said. Auto-deleted via a Firestore TTL
@@ -402,7 +611,7 @@ export async function handleEgressEnded(egressInfo: any) {
       const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000);
       await db.collection("transcripts").doc(meetingId).set({
         meetingId,
-        threadId: thread.id,
+        threadId,
         groupId,
         participantIds,
         transcript: transcriptText,
@@ -423,11 +632,19 @@ export async function handleEgressEnded(egressInfo: any) {
     }
   } catch (error: any) {
     console.error(`Failed to process recording for meeting ${meetingId}:`, error);
+    console.log(JSON.stringify({
+      metric: "summary",
+      status: "failed",
+      meetingId,
+      durationMs: Date.now() - processingStartedMs,
+      error: String(error?.message || error).slice(0, 200),
+    }));
     // Surface the failure immediately so the app can tell the user their
     // summary didn't generate, instead of leaving them waiting indefinitely.
     await db.collection("meetings").doc(meetingId).set(
       {
         summaryError: String(error?.message || error).slice(0, 500),
+        summaryStatus: "failed",
         summaryErrorAt: admin.firestore.FieldValue.serverTimestamp(),
       },
       { merge: true }

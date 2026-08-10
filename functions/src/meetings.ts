@@ -30,7 +30,7 @@ async function getUserByEmail(email: string) {
  * people were never actually added. Anyone whose email has no account is
  * reported back to the organizer so they can share a join link instead.
  */
-export const onMeetingCreated = functions.firestore
+export const onMeetingCreated = functions.region("asia-south1").firestore
   .document("meetings/{meetingId}")
   .onCreate(async (snap, context) => {
     const meeting = snap.data();

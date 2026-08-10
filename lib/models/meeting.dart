@@ -14,7 +14,9 @@ class Meeting {
   final List<AppUser> participants;
   final String? location; // Room name or null for virtual
   final String? groupId;
+  final String? topicId; // if set, the summary appends to this existing topic
   final String? threadId; // non-null if meeting has a summary
+  final String? summaryStatus; // recording | processing | ready | failed
   final String? summaryError; // non-null if summary generation failed/timed out
   final List<String> guestEmails;
   final bool isImportant;
@@ -29,7 +31,9 @@ class Meeting {
     required this.participants,
     this.location,
     this.groupId,
+    this.topicId,
     this.threadId,
+    this.summaryStatus,
     this.summaryError,
     this.guestEmails = const [],
     this.isImportant = false,
@@ -59,7 +63,9 @@ class Meeting {
           [],
       location: json['location'] as String?,
       groupId: json['groupId'] as String?,
+      topicId: json['topicId'] as String?,
       threadId: json['threadId'] as String?,
+      summaryStatus: json['summaryStatus'] as String?,
       summaryError: json['summaryError'] as String?,
       guestEmails: (json['guestEmails'] as List<dynamic>?)
               ?.map((e) => e as String)
@@ -83,7 +89,9 @@ class Meeting {
       'participantIds': participants.map((e) => e.id).toList(),
       'location': location,
       'groupId': groupId,
+      'topicId': topicId,
       'threadId': threadId,
+      'summaryStatus': summaryStatus,
       'guestEmails': guestEmails,
       'isImportant': isImportant,
       'rsvps': rsvps,

@@ -44,7 +44,7 @@ class _InviteMemberDialogState extends ConsumerState<InviteMemberDialog> {
     });
 
     try {
-      final result = await FirebaseFunctions.instance.httpsCallable('sendGroupInvite').call({
+      final result = await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('sendGroupInvite').call({
         'groupId': widget.group.id,
         'email': email,
       });

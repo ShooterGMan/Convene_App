@@ -231,7 +231,7 @@ Future<void> _confirmDeleteGroup(BuildContext context, WidgetRef ref, Group grou
   if (confirmed != true) return;
 
   try {
-    await FirebaseFunctions.instance.httpsCallable('deleteGroup').call({'groupId': group.id});
+    await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('deleteGroup').call({'groupId': group.id});
     if (context.mounted) {
       context.go('/groups');
       ScaffoldMessenger.of(context).showSnackBar(
@@ -268,7 +268,7 @@ Future<void> _confirmLeaveGroup(BuildContext context, WidgetRef ref, Group group
   if (confirmed != true || selfId == null) return;
 
   try {
-    await FirebaseFunctions.instance.httpsCallable('removeGroupMember').call({
+    await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('removeGroupMember').call({
       'groupId': group.id,
       'userId': selfId,
     });
@@ -284,7 +284,7 @@ Future<void> _confirmLeaveGroup(BuildContext context, WidgetRef ref, Group group
 
 Future<void> _setAdmin(BuildContext context, Group group, AppUser member, bool makeAdmin) async {
   try {
-    await FirebaseFunctions.instance.httpsCallable('setGroupAdmin').call({
+    await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('setGroupAdmin').call({
       'groupId': group.id,
       'userId': member.id,
       'makeAdmin': makeAdmin,
@@ -322,7 +322,7 @@ Future<void> _confirmRemoveMember(BuildContext context, Group group, AppUser mem
   if (confirmed != true) return;
 
   try {
-    await FirebaseFunctions.instance.httpsCallable('removeGroupMember').call({
+    await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('removeGroupMember').call({
       'groupId': group.id,
       'userId': member.id,
     });

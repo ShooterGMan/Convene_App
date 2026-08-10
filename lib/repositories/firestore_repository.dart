@@ -200,4 +200,23 @@ class FirestoreRepository {
       return snapshot.docs.map((doc) => ThreadCommentJson.fromJson(doc.data())).toList();
     });
   }
+
+  /// Records user feedback (summary accuracy or general product feedback). The
+  /// `userId` is stamped so the security rules can confirm the writer owns it.
+  Future<void> submitFeedback({
+    required String userId,
+    required String kind, // 'summary' | 'general'
+    String? threadId,
+    bool? accurate,
+    String? message,
+  }) async {
+    await _firestore.collection('feedback').add({
+      'userId': userId,
+      'kind': kind,
+      'threadId': ?threadId,
+      'accurate': ?accurate,
+      if (message != null && message.trim().isNotEmpty) 'message': message.trim(),
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
 }

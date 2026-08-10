@@ -138,5 +138,13 @@ service cloud.firestore {
       );
       allow write: if false;
     }
+
+    // Product/summary feedback. A signed-in user may only create feedback
+    // stamped with their own uid; it's write-only from the client (reviewed
+    // server-side / in the console), never read or modified back.
+    match /feedback/{feedbackId} {
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow read, update, delete: if false;
+    }
   }
 }

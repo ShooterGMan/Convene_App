@@ -33,7 +33,7 @@ class _JoinGroupScreenState extends State<JoinGroupScreen> {
 
   Future<void> _join() async {
     try {
-      final result = await FirebaseFunctions.instance.httpsCallable('joinGroupByInviteLink').call({
+      final result = await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('joinGroupByInviteLink').call({
         'inviteCode': widget.inviteCode,
       });
       final data = result.data as Map;

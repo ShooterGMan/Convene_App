@@ -45,7 +45,7 @@ class _ThreadsListScreenState extends ConsumerState<ThreadsListScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Threads',
+                      'Topics',
                       style: GoogleFonts.plusJakartaSans(
                         fontSize: 32,
                         fontWeight: FontWeight.w700,
@@ -125,7 +125,7 @@ class _ThreadsListScreenState extends ConsumerState<ThreadsListScreen> {
                           ),
                           SizedBox(height: 24),
                           Text(
-                            'No active threads',
+                            'No topics yet',
                             style: GoogleFonts.plusJakartaSans(
                               fontSize: 20,
                               fontWeight: FontWeight.w700,
@@ -134,7 +134,7 @@ class _ThreadsListScreenState extends ConsumerState<ThreadsListScreen> {
                           ),
                           SizedBox(height: 8),
                           Text(
-                            'Context Threads will automatically appear here once your meetings are transcribed and summarized by Convene AI.',
+                            'Topics appear here automatically once your meetings are transcribed and summarized by Convene AI.',
                             textAlign: TextAlign.center,
                             style: GoogleFonts.plusJakartaSans(
                               fontSize: 14,

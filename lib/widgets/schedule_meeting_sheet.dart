@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -24,6 +26,7 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
   DateTime _selectedDate = DateTime.now();
   TimeOfDay _selectedTime = TimeOfDay.now();
   String? _selectedGroupId;
+  String? _selectedTopicId; // if set, this meeting's summary appends to a topic
   MeetingType _selectedType = MeetingType.meet;
   bool _isLoading = false;
   bool _syncWithCalendar = true;
@@ -106,13 +109,17 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
       // the client is on. The creator is the only participant we set here.
       final participants = [user];
 
-      final meetingId = DateTime.now().millisecondsSinceEpoch.toString();
+      // Direct meeting IDs form part of a shareable bearer link, so timestamps
+      // alone are not safe: use 96 bits from the platform CSPRNG instead.
+      final random = Random.secure();
+      final meetingId = List.generate(24, (_) => random.nextInt(16).toRadixString(16)).join();
       final conveneUrl = 'https://meeting-app-844aa.web.app/pre-join/$meetingId';
 
       final meeting = Meeting(
         id: meetingId,
         title: _titleController.text.trim(),
         groupId: _selectedGroupId,
+        topicId: _selectedTopicId,
         startTime: startTime,
         endTime: endTime,
         type: _selectedType,
@@ -165,30 +172,88 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
     }
   }
 
+  /// Optional: attach this meeting's future summary to an existing topic, so
+  /// several meetings about the same subject accumulate into one running topic
+  /// instead of spawning a separate summary each time.
+  Widget _buildTopicSelector() {
+    final threadsAsync = ref.watch(threadsProvider);
+    return threadsAsync.maybeWhen(
+      data: (threads) {
+        if (threads.isEmpty) return const SizedBox.shrink();
+        final sorted = List.of(threads)..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          decoration: BoxDecoration(
+            color: context.colors.surface,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: _selectedTopicId,
+              isExpanded: true,
+              dropdownColor: context.colors.surface,
+              icon: Icon(Icons.arrow_drop_down, color: context.colors.textMuted),
+              hint: Text(
+                'Add to existing topic (Optional)',
+                style: GoogleFonts.plusJakartaSans(color: context.colors.textLight, fontWeight: FontWeight.w500),
+              ),
+              items: [
+                DropdownMenuItem<String>(
+                  value: null,
+                  child: Text('New topic', style: GoogleFonts.plusJakartaSans(color: context.colors.textMain)),
+                ),
+                ...sorted.take(30).map((t) => DropdownMenuItem<String>(
+                      value: t.id,
+                      child: Text(
+                        t.meetingTitle,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.plusJakartaSans(color: context.colors.textMain, fontWeight: FontWeight.w600),
+                      ),
+                    )),
+              ],
+              onChanged: (val) => setState(() => _selectedTopicId = val),
+            ),
+          ),
+        );
+      },
+      orElse: () => const SizedBox.shrink(),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final groupsAsync = ref.watch(groupsProvider);
 
     return Container(
-      padding: EdgeInsets.only(
-        left: 24,
-        right: 24,
-        top: 24,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      // Cap the height so the sheet never grows taller than the screen; the
+      // content scrolls inside. Without this the tall form overflowed and the
+      // Schedule button at the bottom couldn't be reached on small/keyboard-up
+      // screens.
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.9,
       ),
       decoration: BoxDecoration(
         color: context.colors.background,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Schedule Meeting',
+      child: SingleChildScrollView(
+        padding: EdgeInsets.only(
+          left: 24,
+          right: 24,
+          top: 24,
+          // Keyboard-aware: extra bottom space so the Schedule button can be
+          // scrolled up above the on-screen keyboard.
+          bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Schedule Meeting',
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 20,
                   fontWeight: FontWeight.w700,
@@ -375,8 +440,10 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
               );
             },
             loading: () => const SizedBox.shrink(),
-            error: (_, __) => const SizedBox.shrink(),
+            error: (_, _) => const SizedBox.shrink(),
           ),
+          SizedBox(height: 16),
+          _buildTopicSelector(),
           SizedBox(height: 16),
           TextField(
             controller: _guestEmailsController,
@@ -460,7 +527,7 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
               Switch(
                 value: _syncWithCalendar,
                 onChanged: (val) => setState(() => _syncWithCalendar = val),
-                activeColor: context.colors.primary,
+                activeThumbColor: context.colors.primary,
               ),
               SizedBox(width: 8),
               Expanded(
@@ -512,7 +579,8 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
                     ),
                   ),
           ),
-        ],
+          ],
+        ),
       ),
     );
   }

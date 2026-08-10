@@ -276,7 +276,7 @@ class _InviteCardState extends ConsumerState<_InviteCard> {
   Future<void> _respond(bool accept) async {
     setState(() => _isResponding = true);
     try {
-      await FirebaseFunctions.instance.httpsCallable('respondToGroupInvite').call({
+      await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('respondToGroupInvite').call({
         'groupId': widget.invite.groupId,
         'accept': accept,
       });

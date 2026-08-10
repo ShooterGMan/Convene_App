@@ -9,6 +9,7 @@ import 'package:intl/intl.dart';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/data_providers.dart';
 import '../../repositories/firestore_repository.dart';
@@ -37,10 +38,70 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
   final TextEditingController _commentController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
+  // "What changed since you last viewed" tracking.
+  DateTime? _lastViewed;
+  int _newCommentsSinceView = 0;
+  int _editedSinceView = 0;
+  bool _summaryNewSinceView = false;
+  bool _changesDismissed = false;
+
+  // "Was this summary accurate?" — asked once per topic, then remembered.
+  bool _feedbackGiven = false;
+
+  bool get _hasChanges =>
+      !_changesDismissed && (_summaryNewSinceView || _newCommentsSinceView > 0 || _editedSinceView > 0);
+
   @override
   void initState() {
     super.initState();
-    _fetchThread();
+    _init();
+  }
+
+  Future<void> _init() async {
+    final key = 'topic_seen_${widget.threadId}';
+    final prefs = await SharedPreferences.getInstance();
+    final storedMs = prefs.getInt(key);
+    _lastViewed = storedMs == null ? null : DateTime.fromMillisecondsSinceEpoch(storedMs);
+    final feedbackGiven = prefs.getBool('topic_feedback_${widget.threadId}') ?? false;
+    if (mounted) setState(() => _feedbackGiven = feedbackGiven);
+
+    await _fetchThread();
+    await _computeWhatChanged();
+
+    // Record this visit as the new baseline for the next "what changed".
+    await prefs.setInt(key, DateTime.now().millisecondsSinceEpoch);
+  }
+
+  Future<void> _computeWhatChanged() async {
+    if (_lastViewed == null || _thread == null) return;
+    final since = _lastViewed!;
+
+    int newComments = 0;
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('threads')
+          .doc(widget.threadId)
+          .collection('comments')
+          .get();
+      for (final d in snap.docs) {
+        final ts = d.data()['timestamp'];
+        final t = ts is Timestamp ? ts.toDate() : (ts is String ? DateTime.tryParse(ts) : null);
+        if (t != null && t.isAfter(since)) newComments++;
+      }
+    } catch (_) {
+      // Non-fatal: the banner just won't count comments.
+    }
+
+    final edited = _blocks.where((b) => b.editedAt != null && b.editedAt!.isAfter(since)).length;
+    final summaryNew = _thread!.createdAt.isAfter(since);
+
+    if (mounted) {
+      setState(() {
+        _newCommentsSinceView = newComments;
+        _editedSinceView = edited;
+        _summaryNewSinceView = summaryNew;
+      });
+    }
   }
 
   Future<void> _fetchThread() async {
@@ -107,6 +168,265 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
     }
   }
 
+  /// Lightweight "correct the AI" workflow: edit a block's text and stamp it
+  /// with who changed it and when, so the record shows an "edited by" marker
+  /// rather than silently diverging from what was said.
+  Future<void> _editBlock(int index) async {
+    final block = _blocks[index];
+    final controller = TextEditingController(text: block.content);
+    final newText = await showDialog<String>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: context.colors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+        title: Text(
+          'Correct ${block.typeLabel.toLowerCase()}',
+          style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: context.colors.textMain),
+        ),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: null,
+          style: TextStyle(color: context.colors.textMain),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: context.colors.background,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.sm), borderSide: BorderSide.none),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: Text('Cancel', style: TextStyle(color: context.colors.textMuted)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(controller.text.trim()),
+            style: ElevatedButton.styleFrom(backgroundColor: context.colors.primary, foregroundColor: Colors.white),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (newText == null || newText.isEmpty || newText == block.content) return;
+
+    final me = ref.read(appUserProvider).name;
+    final previous = _blocks[index];
+    setState(() {
+      _blocks[index] = previous.copyWith(content: newText, editedBy: me, editedAt: DateTime.now());
+    });
+    try {
+      await ref.read(firestoreRepositoryProvider).updateThreadBlocks(widget.threadId, _blocks);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _blocks[index] = previous);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to save edit: $e')),
+        );
+      }
+    }
+  }
+
+  /// Distinct generic "Speaker N" labels the AI used because it couldn't match
+  /// a voice to a name. These are what the owner can correct.
+  List<String> _detectSpeakerLabels() {
+    final re = RegExp(r'Speaker\s+\w+');
+    final found = <String>{};
+    for (final b in _blocks) {
+      for (final m in re.allMatches(b.content)) {
+        found.add(m.group(0)!);
+      }
+    }
+    final list = found.toList()..sort();
+    return list;
+  }
+
+  /// Lets the meeting owner map each detected "Speaker N" to a real name; the
+  /// mapping is applied across every block and stamped as an edit.
+  Future<void> _showFixSpeakers() async {
+    final labels = _detectSpeakerLabels();
+    if (labels.isEmpty) return;
+    final controllers = {for (final l in labels) l: TextEditingController()};
+
+    final apply = await showDialog<bool>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: context.colors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+        title: Text('Fix speaker names', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: context.colors.textMain)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Replace each detected label with the real name. Leave blank to keep it.',
+                style: GoogleFonts.plusJakartaSans(fontSize: 13, color: context.colors.textMuted),
+              ),
+              SizedBox(height: 16),
+              for (final label in labels)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 92,
+                        child: Text(label, style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: context.colors.textMain)),
+                      ),
+                      Icon(Icons.arrow_forward_rounded, size: 16, color: context.colors.textLight),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: TextField(
+                          controller: controllers[label],
+                          textCapitalization: TextCapitalization.words,
+                          style: TextStyle(color: context.colors.textMain),
+                          decoration: InputDecoration(
+                            hintText: 'Real name',
+                            isDense: true,
+                            filled: true,
+                            fillColor: context.colors.background,
+                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.sm), borderSide: BorderSide.none),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogCtx).pop(false), child: Text('Cancel', style: TextStyle(color: context.colors.textMuted))),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: context.colors.primary, foregroundColor: Colors.white),
+            child: const Text('Apply'),
+          ),
+        ],
+      ),
+    );
+
+    if (apply != true) return;
+
+    final mapping = <String, String>{};
+    controllers.forEach((label, ctrl) {
+      final name = ctrl.text.trim();
+      if (name.isNotEmpty && name != label) mapping[label] = name;
+    });
+    if (mapping.isEmpty) return;
+
+    final me = ref.read(appUserProvider).name;
+    final now = DateTime.now();
+    final previous = List<SmartBlock>.from(_blocks);
+    setState(() {
+      _blocks = _blocks.map((b) {
+        var content = b.content;
+        mapping.forEach((from, to) => content = content.replaceAll(from, to));
+        return content == b.content ? b : b.copyWith(content: content, editedBy: me, editedAt: now);
+      }).toList();
+    });
+    try {
+      await ref.read(firestoreRepositoryProvider).updateThreadBlocks(widget.threadId, _blocks);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _blocks = previous);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to rename speakers: $e')));
+      }
+    }
+  }
+
+  Future<void> _submitSummaryFeedback(bool accurate) async {
+    String? message;
+    if (!accurate) {
+      final controller = TextEditingController();
+      message = await showDialog<String>(
+        context: context,
+        builder: (dialogCtx) => AlertDialog(
+          backgroundColor: context.colors.surface,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+          title: Text('What was missing or wrong?', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: context.colors.textMain)),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            maxLines: null,
+            style: TextStyle(color: context.colors.textMain),
+            decoration: InputDecoration(
+              hintText: 'Optional — helps us improve the AI summaries',
+              filled: true,
+              fillColor: context.colors.background,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.sm), borderSide: BorderSide.none),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(dialogCtx).pop(''), child: Text('Skip', style: TextStyle(color: context.colors.textMuted))),
+            ElevatedButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(controller.text.trim()),
+              style: ElevatedButton.styleFrom(backgroundColor: context.colors.primary, foregroundColor: Colors.white),
+              child: const Text('Send'),
+            ),
+          ],
+        ),
+      );
+      // Dialog dismissed entirely (barrier tap) — don't record anything.
+      if (message == null) return;
+    }
+
+    final me = ref.read(currentUserProvider)?.uid;
+    if (me != null) {
+      try {
+        await ref.read(firestoreRepositoryProvider).submitFeedback(
+              userId: me,
+              kind: 'summary',
+              threadId: widget.threadId,
+              accurate: accurate,
+              message: message,
+            );
+      } catch (e) {
+        debugPrint('Failed to submit feedback: $e');
+      }
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('topic_feedback_${widget.threadId}', true);
+    if (mounted) {
+      setState(() => _feedbackGiven = true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Thanks for the feedback!')),
+      );
+    }
+  }
+
+  Widget _buildFeedbackPrompt() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: context.colors.border.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Was this summary accurate?',
+              style: GoogleFonts.plusJakartaSans(fontSize: 14, fontWeight: FontWeight.w600, color: context.colors.textMain),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: () => _submitSummaryFeedback(true),
+            icon: Icon(Icons.thumb_up_outlined, size: 16, color: context.colors.primary),
+            label: Text('Yes', style: TextStyle(color: context.colors.primary)),
+          ),
+          TextButton.icon(
+            onPressed: () => _submitSummaryFeedback(false),
+            icon: Icon(Icons.thumb_down_outlined, size: 16, color: context.colors.textMuted),
+            label: Text('No', style: TextStyle(color: context.colors.textMuted)),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final bottomPadding = MediaQuery.of(context).padding.bottom;
@@ -148,7 +468,8 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                 onPressed: () => Navigator.of(context).maybePop(),
               ),
               title: Text(
-                '${_thread!.meetingTitle} Context',
+                _thread!.meetingTitle,
+                overflow: TextOverflow.ellipsis,
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 18,
                   fontWeight: FontWeight.w700,
@@ -156,6 +477,12 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                 ),
               ),
               actions: [
+                if (_detectSpeakerLabels().isNotEmpty)
+                  IconButton(
+                    icon: Icon(Icons.record_voice_over_outlined, size: 22),
+                    tooltip: 'Fix speaker names',
+                    onPressed: _showFixSpeakers,
+                  ),
                 IconButton(
                   icon: Icon(Icons.link_rounded, size: 22),
                   tooltip: 'Copy Link',
@@ -247,6 +574,19 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                 ),
                 SizedBox(height: 20),
 
+                // "What changed since you last viewed this?" banner.
+                if (_hasChanges) ...[
+                  _buildWhatChanged(),
+                  SizedBox(height: 16),
+                ],
+
+                // Topic overview: status, decisions, your actions at a glance.
+                _buildTopicOverview()
+                    .animate()
+                    .fadeIn(duration: 400.ms)
+                    .slideY(begin: 0.08, end: 0),
+                SizedBox(height: 24),
+
                 // Analytics Card (Vibe + Talk-Time)
                 if (_thread!.vibe != null)
                   Padding(
@@ -271,6 +611,7 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                       onToggleComplete: block.type == SmartBlockType.actionItem
                           ? () => _toggleComplete(index)
                           : null,
+                      onEdit: () => _editBlock(index),
                     )
                         .animate()
                         .fadeIn(
@@ -298,6 +639,11 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                   _TranscriptSection(meetingId: _thread!.meetingId!),
                 ],
 
+                if (!_feedbackGiven && !_thread!.isGenerating && _blocks.isNotEmpty) ...[
+                  SizedBox(height: 24),
+                  _buildFeedbackPrompt(),
+                ],
+
                 SizedBox(height: 24),
                 _CommentsSection(threadId: widget.threadId),
               ],
@@ -317,6 +663,175 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
 
   bool _hasPendingTasks() {
     return _blocks.any((b) => b.type == SmartBlockType.actionItem && !b.isCompleted);
+  }
+
+  Widget _buildWhatChanged() {
+    final parts = <String>[];
+    if (_summaryNewSinceView) parts.add('a new summary');
+    if (_editedSinceView > 0) parts.add('$_editedSinceView correction${_editedSinceView == 1 ? '' : 's'}');
+    if (_newCommentsSinceView > 0) parts.add('$_newCommentsSinceView new comment${_newCommentsSinceView == 1 ? '' : 's'}');
+    final summary = parts.isEmpty ? 'There are updates.' : 'Since your last visit: ${parts.join(', ')}.';
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: context.colors.primaryLight.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: context.colors.primary.withValues(alpha: 0.3)),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.fiber_new_rounded, size: 20, color: context.colors.primary),
+          SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'What changed',
+                  style: GoogleFonts.plusJakartaSans(fontSize: 13, fontWeight: FontWeight.w800, color: context.colors.primary),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  summary,
+                  style: GoogleFonts.plusJakartaSans(fontSize: 13, color: context.colors.textMain, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+          GestureDetector(
+            onTap: () => setState(() => _changesDismissed = true),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: Icon(Icons.close_rounded, size: 18, color: context.colors.textMuted),
+            ),
+          ),
+        ],
+      ),
+    ).animate().fadeIn(duration: 300.ms);
+  }
+
+  /// One-sentence status distilled from the summary block. For a multi-session
+  /// topic the newest session's summary is the most relevant "current status".
+  String? _statusSentence() {
+    final summaryBlock = _blocks.where((b) => b.type == SmartBlockType.summary).lastOrNull ??
+        (_blocks.isNotEmpty ? _blocks.first : null);
+    final text = summaryBlock?.content.trim();
+    if (text == null || text.isEmpty) return null;
+    final match = RegExp(r'[.!?]').firstMatch(text);
+    if (match != null && match.end < text.length) {
+      return text.substring(0, match.end);
+    }
+    return text;
+  }
+
+  Widget _buildTopicOverview() {
+    final myFirstName = ref.read(appUserProvider).name.split(' ').first;
+    final status = _statusSentence();
+    final decisions = _blocks.where((b) => b.type == SmartBlockType.decision).toList();
+    final keyPoints = _blocks.where((b) => b.type == SmartBlockType.keyInsight).toList();
+    final myActions = _blocks
+        .where((b) => b.type == SmartBlockType.actionItem && b.assignee == myFirstName && !b.isCompleted)
+        .toList();
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        boxShadow: AppShadows.card,
+        border: Border.all(color: context.colors.border.withValues(alpha: 0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.auto_awesome_rounded, size: 18, color: context.colors.primary),
+              SizedBox(width: 8),
+              Text(
+                'Topic overview',
+                style: GoogleFonts.plusJakartaSans(fontSize: 15, fontWeight: FontWeight.w800, color: context.colors.textMain),
+              ),
+            ],
+          ),
+          SizedBox(height: 4),
+          // Source meeting + date, so every point below is traceable.
+          Text(
+            'From ${_thread!.meetingTitle} · ${DateFormat('MMM d, y').format(_thread!.createdAt)}',
+            style: GoogleFonts.plusJakartaSans(fontSize: 12, color: context.colors.textMuted),
+          ),
+          if (status != null) ...[
+            SizedBox(height: 14),
+            Text(
+              status,
+              style: GoogleFonts.plusJakartaSans(fontSize: 15, fontWeight: FontWeight.w600, color: context.colors.textMain, height: 1.4),
+            ),
+          ],
+          if (decisions.isNotEmpty) _overviewSection('Decisions', decisions.map((b) => b.content).toList(), Icons.lightbulb_outline_rounded),
+          if (myActions.isNotEmpty) _overviewSection('Your action items', myActions.map((b) => b.content).toList(), Icons.check_circle_outline_rounded),
+          if (keyPoints.isNotEmpty) _overviewSection('Key points', keyPoints.map((b) => b.content).toList(), Icons.sticky_note_2_outlined),
+          if (status == null && decisions.isEmpty && myActions.isEmpty && keyPoints.isEmpty) ...[
+            SizedBox(height: 12),
+            Text(
+              'This summary is still being generated.',
+              style: GoogleFonts.plusJakartaSans(fontSize: 13, color: context.colors.textMuted),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _overviewSection(String label, List<String> items, IconData icon) {
+    final show = items.take(3).toList();
+    final extra = items.length - show.length;
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 15, color: context.colors.textMuted),
+              SizedBox(width: 6),
+              Text(
+                '${label.toUpperCase()} (${items.length})',
+                style: GoogleFonts.plusJakartaSans(fontSize: 11, fontWeight: FontWeight.w800, color: context.colors.textMuted, letterSpacing: 0.6),
+              ),
+            ],
+          ),
+          SizedBox(height: 8),
+          for (final item in show)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6, left: 2),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6, right: 8),
+                    child: Container(width: 5, height: 5, decoration: BoxDecoration(color: context.colors.primary, shape: BoxShape.circle)),
+                  ),
+                  Expanded(
+                    child: Text(
+                      item,
+                      style: GoogleFonts.plusJakartaSans(fontSize: 14, color: context.colors.textMain, height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (extra > 0)
+            Padding(
+              padding: const EdgeInsets.only(left: 15, top: 2),
+              child: Text(
+                '+$extra more below',
+                style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w600, color: context.colors.textMuted),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   Widget _buildAnalyticsCard() {

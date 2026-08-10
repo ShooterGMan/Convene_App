@@ -56,6 +56,20 @@ LIVEKIT_HOST=https://convene-app-a9liwgoq.livekit.cloud
 EGRESS_BUCKET=...             # GCS bucket for egress audio
 GCP_EGRESS_CREDENTIALS=...    # service-account JSON, minified to one line
 ```
+`functions/.env.example` is the safe local template. The backend now fails
+closed if any required setting is absent. Before the next production deploy,
+migrate each value into Firebase Secret Manager and grant it to the matching
+functions (the code declares these bindings):
+
+```bash
+firebase functions:secrets:set LIVEKIT_API_KEY
+firebase functions:secrets:set LIVEKIT_API_SECRET
+firebase functions:secrets:set GEMINI_API_KEY
+firebase functions:secrets:set LIVEKIT_HOST
+firebase functions:secrets:set EGRESS_BUCKET
+firebase functions:secrets:set GCP_EGRESS_CREDENTIALS
+firebase deploy --only functions
+```
 There is **no** client-side `.env` anymore (removed — it was exposing the Gemini
 key in the web bundle). Don't recreate one.
 
@@ -109,12 +123,11 @@ to prevent staleness.)
 
 ## Known issues / open decisions
 
-1. **LiveKit free tier = 2 concurrent egress (HARD BLOCKER for scale).** Each
-   meeting uses 1 room-composite + 1 track per participant, so a 2-person
-   meeting already needs 3. Free tier WILL break with a few concurrent users.
-   Decision pending: upgrade to LiveKit **Ship ($50/mo, 100 concurrent)** or
-   cap/disable per-speaker tracks. This gates real multi-user usage more than
-   anything else.
+1. **Beta recording capacity: mixed audio only.** Per-speaker track egress is
+   disabled by default via `ENABLE_SPEAKER_TRACKS=false`, so each meeting uses
+   one room-composite egress. Gemini will attribute mixed audio as Speaker 1,
+   Speaker 2, etc. Re-enable per-speaker tracks only after upgrading LiveKit
+   capacity and testing the associated cost/concurrency limits.
 2. **Direct (non-group) meeting links** reported flaky by a tester; join path is
    shared with working group meetings, so cause unconfirmed. Instant meetings
    now create a real doc up front. If still failing, capture the EXACT symptom

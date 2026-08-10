@@ -63,9 +63,9 @@ class ConveneBottomNavBar extends ConsumerWidget {
                 badgeCount: unreadMeetingNotifications,
               ),
               _NavTab(
-                icon: Icons.format_list_bulleted,
-                activeIcon: Icons.format_list_bulleted,
-                label: 'THREADS',
+                icon: Icons.forum_outlined,
+                activeIcon: Icons.forum_rounded,
+                label: 'TOPICS',
                 isActive: currentIndex == 1,
                 onTap: () => onTap(1),
               ),

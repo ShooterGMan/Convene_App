@@ -8,7 +8,7 @@ import { notifyUser } from "./notifications";
  * self-only reads - this callable uses the Admin SDK (bypasses rules) to do
  * the lookup safely on the server instead.
  */
-export const findUserByEmail = functions.https.onCall(async (data, context) => {
+export const findUserByEmail = functions.region("asia-south1").https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
   }
@@ -54,7 +54,7 @@ async function getAppUser(uid: string) {
  * silently end up in a group (and get its meeting summaries) without knowing.
  * Only existing group members can invite others.
  */
-export const sendGroupInvite = functions.https.onCall(async (data, context) => {
+export const sendGroupInvite = functions.region("asia-south1").https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
   }
@@ -113,7 +113,7 @@ export const sendGroupInvite = functions.https.onCall(async (data, context) => {
  * group's memberIds isn't something the normal client-side rules allow
  * (you have to already be a member to update a group).
  */
-export const respondToGroupInvite = functions.https.onCall(async (data, context) => {
+export const respondToGroupInvite = functions.region("asia-south1").https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
   }
@@ -168,7 +168,7 @@ export const respondToGroupInvite = functions.https.onCall(async (data, context)
  * Joins a group directly via its shareable invite link/code - clicking the
  * link and confirming is itself the consent, so no separate accept step.
  */
-export const joinGroupByInviteLink = functions.https.onCall(async (data, context) => {
+export const joinGroupByInviteLink = functions.region("asia-south1").https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
   }
@@ -213,7 +213,7 @@ function effectiveAdminIds(groupData: FirebaseFirestore.DocumentData): string[] 
  * any group admin removing someone else. The last remaining admin can't leave
  * (they must delete the group or promote someone else first).
  */
-export const removeGroupMember = functions.https.onCall(async (data, context) => {
+export const removeGroupMember = functions.region("asia-south1").https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
   }
@@ -263,7 +263,7 @@ export const removeGroupMember = functions.https.onCall(async (data, context) =>
  * can do this. Supports multiple admins at once. You can't demote the last
  * admin (would leave the group unmanageable).
  */
-export const setGroupAdmin = functions.https.onCall(async (data, context) => {
+export const setGroupAdmin = functions.region("asia-south1").https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
   }
@@ -316,7 +316,7 @@ export const setGroupAdmin = functions.https.onCall(async (data, context) => {
  * this. Threads/meetings that referenced the group are left intact (they stay
  * visible to their own participants) - only the group container is removed.
  */
-export const deleteGroup = functions.https.onCall(async (data, context) => {
+export const deleteGroup = functions.region("asia-south1").https.onCall(async (data, context) => {
   if (!context.auth) {
     throw new functions.https.HttpsError("unauthenticated", "Must be logged in.");
   }

@@ -262,14 +262,42 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                         onTap: () => _showLegalDialog(
                           'Privacy Policy',
                           'Convene stores your name, email, meetings, and AI-generated '
-                              'summaries in Firebase, visible only to you and the other '
-                              'participants/group members on each meeting. Meeting audio is '
-                              'processed to generate summaries and deleted afterward; '
-                              'transcripts are kept for 30 days. A finalized Privacy Policy '
-                              'will be published before any public release.',
+                              'summaries in Google Firebase, visible only to you and the '
+                              'other participants/group members on each meeting.\n\n'
+                              'How recordings are handled: meeting audio is recorded, uploaded '
+                              'to Google Cloud Storage, and processed by Google Gemini (a '
+                              'third-party AI service) to generate the written summary. The '
+                              'audio is deleted after the summary is created. Transcripts are '
+                              'kept for 30 days, then automatically deleted.\n\n'
+                              'You are responsible for ensuring everyone in a meeting is aware '
+                              'it is being recorded. Deleting your account removes your profile; '
+                              'to request deletion of a specific recording or summary, use the '
+                              'support contact below.\n\n'
+                              'Convene is in private testing; a finalized Privacy Policy will '
+                              'be published before any public release.',
                         ),
                         contentPadding:
                             const EdgeInsets.symmetric(horizontal: 20),
+                      ),
+                      Divider(height: 1, indent: 20, endIndent: 20),
+                      ListTile(
+                        title: Text('Contact & data requests', style: _tileTextStyle()),
+                        subtitle: Text('Get help or request a recording be deleted', style: _tileSubtitleStyle()),
+                        trailing: Icon(Icons.chevron_right, color: context.colors.textLight),
+                        onTap: () => _showLegalDialog(
+                          'Contact support',
+                          'For help, feedback, or to request deletion of a meeting recording or '
+                              'summary, email:\n\nshootergman12@gmail.com\n\n'
+                              '(A dedicated support address will replace this before public launch.)',
+                        ),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+                      ),
+                      ListTile(
+                        title: Text('Send feedback', style: _tileTextStyle()),
+                        subtitle: Text('Tell us what\'s working or what\'s missing', style: _tileSubtitleStyle()),
+                        trailing: Icon(Icons.chevron_right, color: context.colors.textLight),
+                        onTap: _showFeedbackDialog,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20),
                       ),
                     ],
                   ),
@@ -388,6 +416,39 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _showFeedbackDialog() async {
+    final controller = TextEditingController();
+    final message = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Send feedback'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: null,
+          decoration: const InputDecoration(hintText: 'What\'s working, or what would make Convene better?'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(controller.text.trim()), child: const Text('Send')),
+        ],
+      ),
+    );
+
+    if (message == null || message.isEmpty) return;
+    final uid = ref.read(currentUserProvider)?.uid;
+    if (uid != null) {
+      try {
+        await ref.read(firestoreRepositoryProvider).submitFeedback(userId: uid, kind: 'general', message: message);
+      } catch (e) {
+        debugPrint('Failed to submit feedback: $e');
+      }
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Thanks for the feedback!')));
+    }
   }
 
   Future<void> _editProfile(String currentName) async {

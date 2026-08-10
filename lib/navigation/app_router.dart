@@ -18,6 +18,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/auth_provider.dart';
 import '../providers/data_providers.dart';
 import '../providers/onboarding_provider.dart';
+import '../services/push_notification_service.dart';
 import '../models/user.dart';
 
 final GlobalKey<NavigatorState> _rootNavigatorKey = GlobalKey<NavigatorState>();
@@ -231,6 +232,12 @@ class AppShell extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // Register this device for push notifications once a user is signed in.
+    // Safe to call on every rebuild - the service is idempotent (no-ops after
+    // the first successful registration for the session).
+    final currentUid = ref.watch(currentUserProvider)?.uid;
+    if (currentUid != null) PushNotificationService.initForUser(currentUid);
+
     ref.listen(notificationsProvider, (previous, next) {
       final prevUnread = previous?.value?.where((n) => !n.isRead).length ?? -1;
       final nextUnread = next.value?.where((n) => !n.isRead).length ?? 0;

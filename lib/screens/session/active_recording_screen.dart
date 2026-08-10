@@ -6,12 +6,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:go_router/go_router.dart';
 import 'package:livekit_client/livekit_client.dart';
 
 import '../../models/user.dart';
 import '../../providers/auth_provider.dart';
 import '../../repositories/firestore_repository.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/recording_consent.dart';
 import '../../widgets/waveform_visualizer.dart';
 import '../thread/context_thread_screen.dart';
 
@@ -51,17 +53,26 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
   StreamSubscription? _meetingSub;
   Timer? _summaryTimeoutTimer;
 
+  // Recording captures people physically in the room, so we don't connect (and
+  // therefore don't start the LiveKit egress recording) until the recorder has
+  // confirmed everyone present agreed - see OfflineRecordingConsentGate.
+  bool _consented = false;
+
   @override
   void initState() {
     super.initState();
     debugPrint('[REC] initState meetingId=${widget.meetingId}');
+  }
+
+  void _onConsent() {
+    setState(() => _consented = true);
     _connect();
   }
 
   Future<void> _connect() async {
     debugPrint('[REC] requesting LiveKit token...');
     try {
-      final result = await FirebaseFunctions.instance.httpsCallable('getLivekitToken').call({
+      final result = await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('getLivekitToken').call({
         'meetingId': widget.meetingId,
         'groupId': widget.groupId,
         'displayName': ref.read(appUserProvider).name,
@@ -139,7 +150,7 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
     try {
       // We're always the sole participant here, so it's safe to finalize the
       // egress immediately instead of waiting on LiveKit's empty-room timeout.
-      final result = await FirebaseFunctions.instance.httpsCallable('stopMeetingEgress').call({
+      final result = await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('stopMeetingEgress').call({
         'meetingId': widget.meetingId,
       });
       await _room.disconnect();
@@ -213,6 +224,15 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
   @override
   Widget build(BuildContext context) {
     final safePadding = MediaQuery.of(context).padding;
+
+    // Gate the whole recording flow behind explicit consent before anything
+    // connects or records.
+    if (!_consented) {
+      return OfflineRecordingConsentGate(
+        onConsent: _onConsent,
+        onCancel: () => context.canPop() ? context.pop() : context.go('/upcoming'),
+      );
+    }
 
     return Scaffold(
       body: Stack(

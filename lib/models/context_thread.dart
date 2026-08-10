@@ -30,6 +30,10 @@ class SmartBlock {
   final String? assignee; // For action items — e.g., "@Alex"
   final bool isCompleted; // For action items
   final List<Reaction> reactions;
+  // Set when a person corrects the AI's text, so the UI can show an
+  // "edited by X" marker instead of silently overwriting the record.
+  final String? editedBy;
+  final DateTime? editedAt;
 
   const SmartBlock({
     required this.id,
@@ -38,6 +42,8 @@ class SmartBlock {
     this.assignee,
     this.isCompleted = false,
     this.reactions = const [],
+    this.editedBy,
+    this.editedAt,
   });
 
   String get typeLabel {
@@ -53,14 +59,22 @@ class SmartBlock {
     }
   }
 
-  SmartBlock copyWith({bool? isCompleted, List<Reaction>? reactions}) {
+  SmartBlock copyWith({
+    String? content,
+    bool? isCompleted,
+    List<Reaction>? reactions,
+    String? editedBy,
+    DateTime? editedAt,
+  }) {
     return SmartBlock(
       id: id,
       type: type,
-      content: content,
+      content: content ?? this.content,
       assignee: assignee,
       isCompleted: isCompleted ?? this.isCompleted,
       reactions: reactions ?? this.reactions,
+      editedBy: editedBy ?? this.editedBy,
+      editedAt: editedAt ?? this.editedAt,
     );
   }
 }
@@ -200,6 +214,12 @@ extension SmartBlockJson on SmartBlock {
               ?.map((e) => ReactionJson.fromJson(e as Map<String, dynamic>))
               .toList() ??
           [],
+      editedBy: json['editedBy'] as String?,
+      editedAt: json['editedAt'] == null
+          ? null
+          : (json['editedAt'] is Timestamp
+              ? (json['editedAt'] as Timestamp).toDate()
+              : DateTime.tryParse(json['editedAt'] as String)),
     );
   }
 
@@ -211,6 +231,8 @@ extension SmartBlockJson on SmartBlock {
       'assignee': assignee,
       'isCompleted': isCompleted,
       'reactions': reactions.map((e) => e.toJson()).toList(),
+      'editedBy': editedBy,
+      'editedAt': editedAt?.toIso8601String(),
     };
   }
 }

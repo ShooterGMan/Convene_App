@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:intl/intl.dart';
 
 import '../models/context_thread.dart';
 import '../theme/app_theme.dart';
@@ -8,12 +9,14 @@ class SmartBlockWidget extends StatelessWidget {
   final SmartBlock block;
   final VoidCallback? onToggleComplete;
   final VoidCallback? onReact;
+  final VoidCallback? onEdit;
 
   const SmartBlockWidget({
     super.key,
     required this.block,
     this.onToggleComplete,
     this.onReact,
+    this.onEdit,
   });
 
   @override
@@ -70,7 +73,16 @@ class SmartBlockWidget extends StatelessWidget {
                           ),
                     ),
                   ),
-                ],
+                ] else
+                  const Spacer(),
+                if (onEdit != null)
+                  GestureDetector(
+                    onTap: onEdit,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Icon(Icons.edit_outlined, size: 16, color: context.colors.textLight),
+                    ),
+                  ),
               ],
             ),
             SizedBox(height: 12),
@@ -92,6 +104,25 @@ class SmartBlockWidget extends StatelessWidget {
                             : null,
                   ),
             ),
+            if (block.editedBy != null) ...[
+              SizedBox(height: 10),
+              Row(
+                children: [
+                  Icon(Icons.history_edu_outlined, size: 13, color: context.colors.textLight),
+                  SizedBox(width: 5),
+                  Text(
+                    block.editedAt != null
+                        ? 'Edited by ${block.editedBy} · ${DateFormat('MMM d').format(block.editedAt!)}'
+                        : 'Edited by ${block.editedBy}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: context.colors.textLight,
+                          fontSize: 11,
+                          fontStyle: FontStyle.italic,
+                        ),
+                  ),
+                ],
+              ),
+            ],
           ],
         ),
       ),
