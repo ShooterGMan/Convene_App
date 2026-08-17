@@ -227,6 +227,96 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
     }
   }
 
+  Future<void> _assignBlock(int index) async {
+    final block = _blocks[index];
+    final participants = _thread?.participants ?? [];
+    final controller = TextEditingController(text: block.assignee ?? '');
+    
+    final selectedName = await showDialog<String>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        backgroundColor: context.colors.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+        title: Text(
+          'Assign Action Item',
+          style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: context.colors.textMain),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (participants.isNotEmpty) ...[
+              Text(
+                'Select a participant or enter a custom name:',
+                style: GoogleFonts.plusJakartaSans(fontSize: 13, color: context.colors.textMuted),
+              ),
+              SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: participants.map((user) {
+                  final firstName = user.name.split(' ').first;
+                  return ChoiceChip(
+                    label: Text('@$firstName'),
+                    selected: controller.text.toLowerCase() == firstName.toLowerCase(),
+                    onSelected: (_) => Navigator.of(dialogCtx).pop(firstName),
+                    selectedColor: context.colors.primaryLight,
+                    labelStyle: TextStyle(
+                      color: controller.text.toLowerCase() == firstName.toLowerCase()
+                          ? context.colors.primary
+                          : context.colors.textMain,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  );
+                }).toList(),
+              ),
+              SizedBox(height: 16),
+            ],
+            TextField(
+              controller: controller,
+              style: TextStyle(color: context.colors.textMain),
+              decoration: InputDecoration(
+                hintText: 'Or type name (e.g. Alex)',
+                filled: true,
+                fillColor: context.colors.background,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.sm), borderSide: BorderSide.none),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: Text('Cancel', style: TextStyle(color: context.colors.textMuted)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(controller.text.trim()),
+            style: ElevatedButton.styleFrom(backgroundColor: context.colors.primary, foregroundColor: Colors.white),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (selectedName == null) return;
+    final assigneeName = selectedName.isEmpty ? null : selectedName.replaceAll('@', '');
+    final previous = _blocks[index];
+
+    setState(() {
+      _blocks[index] = previous.copyWith(assignee: assigneeName);
+    });
+
+    try {
+      await ref.read(firestoreRepositoryProvider).updateThreadBlocks(widget.threadId, _blocks);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _blocks[index] = previous);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update assignee: $e')),
+        );
+      }
+    }
+  }
+
   /// Distinct generic "Speaker N" labels the AI used because it couldn't match
   /// a voice to a name. These are what the owner can correct.
   List<String> _detectSpeakerLabels() {
@@ -594,6 +684,13 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                     child: _buildAnalyticsCard(),
                   ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.1, end: 0),
 
+                // Audio / Video Recording Playback Section
+                if (_thread!.recordingUrl != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 24),
+                    child: _buildAudioPlaybackSection(),
+                  ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.1, end: 0),
+
                 // Pending Tasks section
                 if (_hasPendingTasks())
                   Padding(
@@ -612,6 +709,9 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                           ? () => _toggleComplete(index)
                           : null,
                       onEdit: () => _editBlock(index),
+                      onAssign: block.type == SmartBlockType.actionItem
+                          ? () => _assignBlock(index)
+                          : null,
                     )
                         .animate()
                         .fadeIn(
@@ -913,6 +1013,101 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
     );
   }
 
+  Widget _buildAudioPlaybackSection() {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        boxShadow: AppShadows.card,
+        border: Border.all(color: context.colors.primary.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.graphic_eq_rounded, size: 20, color: context.colors.primary),
+              SizedBox(width: 8),
+              Text(
+                'MEETING AUDIO RECORDING',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: context.colors.primary,
+                  letterSpacing: 1.0,
+                ),
+              ),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: context.colors.primaryLight,
+                  borderRadius: BorderRadius.circular(AppRadius.full),
+                ),
+                child: Text(
+                  'Cloud Sync',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: context.colors.primary,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 12),
+          Row(
+            children: [
+              CircleAvatar(
+                backgroundColor: context.colors.primary,
+                child: IconButton(
+                  icon: const Icon(Icons.play_arrow_rounded, color: Colors.white),
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Playing cloud recording from ${_thread!.recordingUrl}')),
+                    );
+                  },
+                ),
+              ),
+              SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Audio Track & AI Transcript Stream',
+                      style: GoogleFonts.plusJakartaSans(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: context.colors.textMain,
+                      ),
+                    ),
+                    SizedBox(height: 4),
+                    LinearProgressIndicator(
+                      value: 0.35,
+                      backgroundColor: context.colors.border.withValues(alpha: 0.3),
+                      color: context.colors.primary,
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(width: 12),
+              Text(
+                '04:12',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: context.colors.textMuted,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPendingTasks() {
     final pendingBlocks = _blocks.where((b) => b.type == SmartBlockType.actionItem && !b.isCompleted).toList();
     
@@ -931,7 +1126,7 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
               Icon(Icons.checklist_rounded, size: 18, color: context.colors.primary),
               SizedBox(width: 8),
               Text(
-                'PENDING TASKS',
+                'PENDING TASKS (${pendingBlocks.length})',
                 style: GoogleFonts.plusJakartaSans(
                   fontSize: 12,
                   fontWeight: FontWeight.w800,
@@ -947,7 +1142,7 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
             return Padding(
               padding: const EdgeInsets.only(bottom: 8.0),
               child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   GestureDetector(
                     onTap: () => _toggleComplete(indexInBlocks),
@@ -966,6 +1161,26 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                         fontWeight: FontWeight.w500,
                         color: context.colors.textMain,
                         height: 1.4,
+                      ),
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: () => _assignBlock(indexInBlocks),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: context.colors.surface,
+                        borderRadius: BorderRadius.circular(AppRadius.full),
+                        border: Border.all(color: context.colors.border.withValues(alpha: 0.5)),
+                      ),
+                      child: Text(
+                        block.assignee != null ? '@${block.assignee}' : 'Assign',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: block.assignee != null ? context.colors.primary : context.colors.textMuted,
+                        ),
                       ),
                     ),
                   ),

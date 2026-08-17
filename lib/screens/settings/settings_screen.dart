@@ -177,6 +177,30 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ),
                   SizedBox(height: 12),
 
+                  // ── Beta Feedback ──
+                  _buildSectionHeader('BETA TESTING'),
+                  _buildSection(
+                    children: [
+                      ListTile(
+                        leading: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: context.colors.primaryLight,
+                            borderRadius: BorderRadius.circular(AppRadius.sm),
+                          ),
+                          child: Icon(Icons.rate_review_rounded, color: context.colors.primary, size: 22),
+                        ),
+                        title: Text('Send Beta Feedback', style: _tileTextStyle()),
+                        subtitle: Text('Report a bug, suggest a feature, or leave thoughts', style: _tileSubtitleStyle()),
+                        trailing: Icon(Icons.chevron_right, color: context.colors.textLight),
+                        onTap: _showFeedbackDialog,
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 12),
+
                   // ── Account ──
                   _buildSectionHeader('ACCOUNT'),
                   _buildSection(

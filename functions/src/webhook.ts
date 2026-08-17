@@ -528,10 +528,12 @@ export async function handleEgressEnded(egressInfo: any) {
 
     if (!threadId) {
       const threadRef = db.collection("threads").doc();
+      const recordingUrl = `https://storage.googleapis.com/${egressBucket()}/${objectKey}`;
       await threadRef.set({
         id: threadRef.id,
         meetingTitle,
         groupId,
+        recordingUrl,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         participants,
         participantIds,

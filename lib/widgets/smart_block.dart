@@ -10,6 +10,7 @@ class SmartBlockWidget extends StatelessWidget {
   final VoidCallback? onToggleComplete;
   final VoidCallback? onReact;
   final VoidCallback? onEdit;
+  final VoidCallback? onAssign;
 
   const SmartBlockWidget({
     super.key,
@@ -17,6 +18,7 @@ class SmartBlockWidget extends StatelessWidget {
     this.onToggleComplete,
     this.onReact,
     this.onEdit,
+    this.onAssign,
   });
 
   @override
@@ -54,23 +56,39 @@ class SmartBlockWidget extends StatelessWidget {
                         letterSpacing: 1.2,
                       ),
                 ),
-                if (block.type == SmartBlockType.actionItem &&
-                    block.assignee != null) ...[
+                if (block.type == SmartBlockType.actionItem) ...[
+                  SizedBox(width: 8),
+                  _buildPriorityBadge(context),
                   const Spacer(),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: context.colors.primaryLight,
-                      borderRadius: BorderRadius.circular(AppRadius.full),
-                    ),
-                    child: Text(
-                      '@${block.assignee}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: context.colors.primary,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 12,
+                  GestureDetector(
+                    onTap: onAssign,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: block.assignee != null 
+                            ? context.colors.primaryLight 
+                            : context.colors.textMuted.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(AppRadius.full),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.person_outline_rounded,
+                            size: 13,
+                            color: block.assignee != null ? context.colors.primary : context.colors.textMuted,
                           ),
+                          SizedBox(width: 4),
+                          Text(
+                            block.assignee != null ? '@${block.assignee}' : 'Assign',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: block.assignee != null ? context.colors.primary : context.colors.textMuted,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 12,
+                                ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ] else
@@ -93,17 +111,31 @@ class SmartBlockWidget extends StatelessWidget {
                     fontSize: 16,
                     fontWeight: FontWeight.w500,
                     height: 1.6,
-                    color: block.type == SmartBlockType.actionItem &&
-                            block.isCompleted
+                    color: block.type == SmartBlockType.actionItem && block.isCompleted
                         ? context.colors.textMuted
                         : context.colors.textMain,
-                    decoration:
-                        block.type == SmartBlockType.actionItem &&
-                                block.isCompleted
-                            ? TextDecoration.lineThrough
-                            : null,
+                    decoration: block.type == SmartBlockType.actionItem && block.isCompleted
+                        ? TextDecoration.lineThrough
+                        : null,
                   ),
             ),
+            if (block.type == SmartBlockType.actionItem && block.dueDate != null) ...[
+              SizedBox(height: 8),
+              Row(
+                children: [
+                  Icon(Icons.calendar_today_rounded, size: 12, color: context.colors.textMuted),
+                  SizedBox(width: 4),
+                  Text(
+                    'Due ${DateFormat('MMM d').format(block.dueDate!)}',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: context.colors.textMuted,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                  ),
+                ],
+              ),
+            ],
             if (block.editedBy != null) ...[
               SizedBox(height: 10),
               Row(
@@ -201,6 +233,43 @@ class SmartBlockWidget extends StatelessWidget {
           ),
         );
     }
+  }
+
+  Widget _buildPriorityBadge(BuildContext context) {
+    Color badgeColor;
+    String label;
+    switch (block.priority) {
+      case SmartBlockPriority.high:
+        badgeColor = Colors.red.shade400;
+        label = 'HIGH';
+        break;
+      case SmartBlockPriority.medium:
+        badgeColor = Colors.amber.shade700;
+        label = 'MED';
+        break;
+      case SmartBlockPriority.low:
+        badgeColor = Colors.blue.shade400;
+        label = 'LOW';
+        break;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: badgeColor.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: badgeColor.withValues(alpha: 0.4), width: 0.8),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: badgeColor,
+          fontSize: 10,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
   }
 
   String get _typeLabel {

@@ -64,6 +64,8 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
   // UI States
   bool _isChatVisible = false;
   bool _isSpeakerView = false;
+  bool _isHandRaised = false;
+  final List<String> _raisedHandQueue = [];
   final TextEditingController _chatController = TextEditingController();
   final List<Map<String, dynamic>> _messages = [];
 
@@ -117,6 +119,14 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
           if (text.startsWith('REACTION:')) {
             final emoji = text.substring(9);
             _showReaction(emoji);
+          } else if (text.startsWith('HAND_RAISE:')) {
+            final identity = text.substring(11);
+            if (!_raisedHandQueue.contains(identity)) {
+              setState(() => _raisedHandQueue.add(identity));
+            }
+          } else if (text.startsWith('HAND_LOWER:')) {
+            final identity = text.substring(11);
+            setState(() => _raisedHandQueue.remove(identity));
           } else {
             setState(() {
               _messages.add({
@@ -161,6 +171,31 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
     // Safety net in case screen share was left on when the meeting ended.
     _setAndroidScreenShareForegroundService(false);
     super.dispose();
+  }
+
+  void _toggleHandRaise() {
+    final myIdentity = _room.localParticipant?.identity;
+    if (myIdentity == null) return;
+
+    setState(() {
+      _isHandRaised = !_isHandRaised;
+      if (_isHandRaised) {
+        if (!_raisedHandQueue.contains(myIdentity)) _raisedHandQueue.add(myIdentity);
+      } else {
+        _raisedHandQueue.remove(myIdentity);
+      }
+    });
+
+    final msg = _isHandRaised ? 'HAND_RAISE:$myIdentity' : 'HAND_LOWER:$myIdentity';
+    _room.localParticipant?.publishData(utf8.encode(msg));
+  }
+
+  void _lowerParticipantHand(String identity) {
+    setState(() => _raisedHandQueue.remove(identity));
+    if (identity == _room.localParticipant?.identity) {
+      setState(() => _isHandRaised = false);
+    }
+    _room.localParticipant?.publishData(utf8.encode('HAND_LOWER:$identity'));
   }
 
   void _showReaction(String emoji) {
@@ -414,7 +449,7 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
               _controlButton(
                 icon: lp.isMicrophoneEnabled() ? Icons.mic : Icons.mic_off,
                 tooltip: lp.isMicrophoneEnabled() ? 'Mute' : 'Unmute',
-                background: lp.isMicrophoneEnabled() ? null : Colors.red,
+                background: lp.isMicrophoneEnabled() ? null : Colors.red.shade600,
                 onTap: () async {
                   await lp.setMicrophoneEnabled(!lp.isMicrophoneEnabled());
                   setState(() {});
@@ -424,11 +459,18 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
               _controlButton(
                 icon: lp.isCameraEnabled() ? Icons.videocam : Icons.videocam_off,
                 tooltip: lp.isCameraEnabled() ? 'Stop camera' : 'Start camera',
-                background: lp.isCameraEnabled() ? null : Colors.red,
+                background: lp.isCameraEnabled() ? null : Colors.red.shade600,
                 onTap: () async {
                   await lp.setCameraEnabled(!lp.isCameraEnabled());
                   setState(() {});
                 },
+              ),
+              const SizedBox(width: 10),
+              _controlButton(
+                icon: Icons.front_hand_rounded,
+                tooltip: _isHandRaised ? 'Lower hand' : 'Raise hand',
+                background: _isHandRaised ? Colors.amber.shade700 : null,
+                onTap: _toggleHandRaise,
               ),
               if (_screenShareSupported) ...[
                 const SizedBox(width: 10),
@@ -756,44 +798,132 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
       ..._room.remoteParticipants.values,
     ];
 
-    return ListView.builder(
+    return ListView(
       padding: const EdgeInsets.all(16),
-      itemCount: participants.length,
-      itemBuilder: (context, index) {
-        final p = participants[index];
-        final isMe = p is LocalParticipant;
-        final isSpeaking = p.isSpeaking;
-        
-        return ListTile(
-          leading: CircleAvatar(
-            backgroundColor: isSpeaking ? Colors.blue : Colors.grey.shade700,
-            child: Text(
-              p.identity.isNotEmpty ? p.identity[0].toUpperCase() : '?',
-              style: const TextStyle(color: Colors.white),
+      children: [
+        if (_raisedHandQueue.isNotEmpty) ...[
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.amber.shade900.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.amber.shade600.withValues(alpha: 0.5)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.front_hand_rounded, color: Colors.amber, size: 18),
+                    const SizedBox(width: 8),
+                    Text(
+                      'HAND RAISE QUEUE (${_raisedHandQueue.length})',
+                      style: const TextStyle(
+                        color: Colors.amber,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                ..._raisedHandQueue.asMap().entries.map((entry) {
+                  final idx = entry.key;
+                  final id = entry.value;
+                  final p = participants.firstWhere(
+                    (user) => user.identity == id,
+                    orElse: () => _room.localParticipant!,
+                  );
+                  final name = p is LocalParticipant ? 'You' : (p.name.isNotEmpty ? p.name : p.identity);
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 20,
+                          height: 20,
+                          decoration: BoxDecoration(
+                            color: Colors.amber.shade700,
+                            shape: BoxShape.circle,
+                          ),
+                          child: Center(
+                            child: Text(
+                              '${idx + 1}',
+                              style: const TextStyle(color: Colors.black, fontSize: 11, fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                        ),
+                        TextButton(
+                          onPressed: () => _lowerParticipantHand(id),
+                          child: const Text('Lower', style: TextStyle(color: Colors.amber, fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                  );
+                }),
+              ],
             ),
           ),
-          title: Text(
-            isMe ? 'You' : p.name.isNotEmpty ? p.name : p.identity,
-            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-          ),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                p.isMicrophoneEnabled() ? Icons.mic : Icons.mic_off,
-                color: p.isMicrophoneEnabled() ? (isSpeaking ? Colors.blue : Colors.white) : Colors.red,
-                size: 20,
-              ),
-              const SizedBox(width: 12),
-              Icon(
-                p.isCameraEnabled() ? Icons.videocam : Icons.videocam_off,
-                color: p.isCameraEnabled() ? Colors.white : Colors.red,
-                size: 20,
-              ),
-            ],
-          ),
-        );
-      },
+          const SizedBox(height: 16),
+        ],
+
+        ...participants.map((p) {
+          final isMe = p is LocalParticipant;
+          final isSpeaking = p.isSpeaking;
+          final hasHandRaised = _raisedHandQueue.contains(p.identity);
+
+          return ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Stack(
+              children: [
+                CircleAvatar(
+                  backgroundColor: isSpeaking ? Colors.blue : Colors.grey.shade700,
+                  child: Text(
+                    p.identity.isNotEmpty ? p.identity[0].toUpperCase() : '?',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                ),
+                if (hasHandRaised)
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: const BoxDecoration(color: Colors.amber, shape: BoxShape.circle),
+                      child: const Icon(Icons.front_hand_rounded, size: 10, color: Colors.black),
+                    ),
+                  ),
+              ],
+            ),
+            title: Text(
+              isMe ? 'You' : (p.name.isNotEmpty ? p.name : p.identity),
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+            ),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  p.isMicrophoneEnabled() ? Icons.mic : Icons.mic_off,
+                  color: p.isMicrophoneEnabled() ? (isSpeaking ? Colors.blue : Colors.white) : Colors.red,
+                  size: 20,
+                ),
+                const SizedBox(width: 12),
+                Icon(
+                  p.isCameraEnabled() ? Icons.videocam : Icons.videocam_off,
+                  color: p.isCameraEnabled() ? Colors.white : Colors.red,
+                  size: 20,
+                ),
+              ],
+            ),
+          );
+        }),
+      ],
     );
   }
 
@@ -1113,6 +1243,31 @@ class _VideoWidgetState extends State<VideoWidget> {
                   child: const Text('Screen Share', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
                 ),
               ),
+            Positioned(
+              top: 8,
+              left: 8,
+              child: Builder(
+                builder: (context) {
+                  final isHandRaised = context.findAncestorStateOfType<_LiveMeetingScreenState>()?._raisedHandQueue.contains(widget.participant.identity) ?? false;
+                  if (!isHandRaised) return const SizedBox.shrink();
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade700,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.front_hand_rounded, color: Colors.black, size: 12),
+                        SizedBox(width: 4),
+                        Text('Hand Raised', style: TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
             Positioned(
               bottom: 8,
               left: 8,
