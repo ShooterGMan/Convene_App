@@ -2,12 +2,16 @@ import 'dart:ui';
 import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:livekit_client/livekit_client.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter/services.dart';
 import 'dart:async';
 import 'dart:convert';
+import 'package:wakelock_plus/wakelock_plus.dart';
+import '../../services/background_meeting_service.dart';
 import '../../theme/app_theme.dart';
 
 /// Android requires an active foreground service (of type "mediaProjection")
@@ -72,6 +76,14 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
   // Reactions
   String? _currentReaction;
 
+  // Live Captions & Subtitles
+  bool _showSubtitles = true;
+  String? _currentCaption;
+  String? _currentCaptionSpeaker;
+  Timer? _captionTimer;
+  String? _liveHighlightBadge;
+  Timer? _highlightTimer;
+
   // Elapsed-time timer (no hard cutoff - just a running counter)
   Timer? _elapsedTimer;
   int _elapsedSeconds = 0;
@@ -89,6 +101,11 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
   @override
   void initState() {
     super.initState();
+    try {
+      WakelockPlus.enable();
+    } catch (e) {
+      debugPrint('Wakelock enable failed: $e');
+    }
     _connectToRoom();
   }
 
@@ -127,6 +144,27 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
           } else if (text.startsWith('HAND_LOWER:')) {
             final identity = text.substring(11);
             setState(() => _raisedHandQueue.remove(identity));
+          } else if (text.startsWith('CAPTION:')) {
+            final parts = text.substring(8).split(':');
+            final speaker = parts.first;
+            final captionText = parts.skip(1).join(':');
+            _captionTimer?.cancel();
+            setState(() {
+              _currentCaptionSpeaker = speaker;
+              _currentCaption = captionText;
+            });
+            _captionTimer = Timer(const Duration(seconds: 4), () {
+              if (mounted) setState(() => _currentCaption = null);
+            });
+          } else if (text.startsWith('HIGHLIGHT:')) {
+            final highlight = text.substring(10);
+            _highlightTimer?.cancel();
+            setState(() {
+              _liveHighlightBadge = highlight;
+            });
+            _highlightTimer = Timer(const Duration(seconds: 5), () {
+              if (mounted) setState(() => _liveHighlightBadge = null);
+            });
           } else {
             setState(() {
               _messages.add({
@@ -138,19 +176,47 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
         }
       });
       
+      if (!kIsWeb) {
+        try {
+          await [
+            Permission.microphone,
+            Permission.camera,
+            Permission.bluetoothConnect,
+          ].request();
+        } catch (e) {
+          debugPrint('Mobile permission request error: $e');
+        }
+      }
+
       await _room.connect(livekitUrl, token);
       
       if (!widget.isCameraMuted) {
-        await _room.localParticipant?.setCameraEnabled(true);
+        try {
+          await _room.localParticipant?.setCameraEnabled(true);
+        } catch (e) {
+          debugPrint('Camera enable error on Android: $e');
+        }
       }
       if (!widget.isMicMuted) {
-        await _room.localParticipant?.setMicrophoneEnabled(true);
+        try {
+          await _room.localParticipant?.setMicrophoneEnabled(true);
+        } catch (e) {
+          debugPrint('Microphone enable error on Android: $e');
+        }
       }
 
       setState(() {
         _isConnecting = false;
       });
       _startElapsedTimer();
+      try {
+        BackgroundMeetingService.start(
+          title: 'Meeting Active',
+          text: widget.displayName.isNotEmpty ? 'Active meeting as ${widget.displayName}' : 'Your meeting is active in the background',
+        );
+      } catch (e) {
+        debugPrint('Background service start ignored: $e');
+      }
     } catch (e) {
       debugPrint("Backend connection failed: $e");
       
@@ -163,12 +229,18 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
 
   @override
   void dispose() {
+    try {
+      WakelockPlus.disable();
+    } catch (e) {
+      debugPrint('Wakelock disable failed: $e');
+    }
     _chatController.dispose();
     _elapsedTimer?.cancel();
     _listener?.dispose();
     _room.disconnect();
     _room.dispose();
-    // Safety net in case screen share was left on when the meeting ended.
+    // Stop background meeting foreground service.
+    BackgroundMeetingService.stop();
     _setAndroidScreenShareForegroundService(false);
     super.dispose();
   }
@@ -393,6 +465,27 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
                               );
                             },
                           ),
+                        ),
+                      ),
+
+                    // Live Highlight Toast Overlay
+                    if (_liveHighlightBadge != null)
+                      Positioned(
+                        top: 20,
+                        left: 0,
+                        right: 0,
+                        child: Center(child: _LiveHighlightToast(highlightText: _liveHighlightBadge!)),
+                      ),
+
+                    // Live Captions & Subtitles Overlay
+                    if (_showSubtitles && _currentCaption != null)
+                      Positioned(
+                        bottom: 90,
+                        left: 16,
+                        right: 16,
+                        child: _LiveCaptionsOverlay(
+                          speaker: _currentCaptionSpeaker ?? 'Speaker',
+                          caption: _currentCaption!,
                         ),
                       ),
 
@@ -947,11 +1040,41 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
 
 }
 
+String _getParticipantInitials(String name) {
+  final clean = name.trim();
+  if (clean.isEmpty) return '?';
+  final parts = clean.split(RegExp(r'\s+'));
+  if (parts.length >= 2 && parts[0].isNotEmpty && parts[1].isNotEmpty) {
+    return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+  }
+  return clean[0].toUpperCase();
+}
+
+LinearGradient _getAvatarGradient(String name) {
+  final hash = name.codeUnits.fold(0, (prev, elem) => prev + elem);
+  final colorsList = [
+    [const Color(0xFF6366F1), const Color(0xFF8B5CF6)],
+    [const Color(0xFF0EA5E9), const Color(0xFF2563EB)],
+    [const Color(0xFF10B981), const Color(0xFF059669)],
+    [const Color(0xFFF59E0B), const Color(0xFFD97706)],
+    [const Color(0xFFEC4899), const Color(0xFFD946EF)],
+    [const Color(0xFF14B8A6), const Color(0xFF0D9488)],
+  ];
+  final pair = colorsList[hash % colorsList.length];
+  return LinearGradient(colors: pair, begin: Alignment.topLeft, end: Alignment.bottomRight);
+}
+
 class VideoGrid extends StatefulWidget {
   final Room room;
   final bool isSpeakerView;
   final VoidCallback? onCopyInvite;
-  const VideoGrid({super.key, required this.room, required this.isSpeakerView, this.onCopyInvite});
+
+  const VideoGrid({
+    super.key,
+    required this.room,
+    required this.isSpeakerView,
+    this.onCopyInvite,
+  });
 
   @override
   State<VideoGrid> createState() => _VideoGridState();
@@ -960,9 +1083,6 @@ class VideoGrid extends StatefulWidget {
 class _VideoGridState extends State<VideoGrid> {
   List<Participant> _participants = [];
   Participant? _activeSpeaker;
-  // When set, this participant stays "featured" regardless of who's talking -
-  // lets someone keep themselves (or anyone else) big instead of the view
-  // always jumping to whoever's currently speaking.
   String? _pinnedIdentity;
 
   @override
@@ -990,7 +1110,6 @@ class _VideoGridState extends State<VideoGrid> {
       _activeSpeaker = participants.first;
     }
 
-    // Fallback if active speaker left the room
     if (_activeSpeaker != null && !participants.any((p) => p.identity == _activeSpeaker!.identity)) {
       _activeSpeaker = participants.isNotEmpty ? participants.first : null;
     }
@@ -1015,159 +1134,278 @@ class _VideoGridState extends State<VideoGrid> {
       );
     }
 
-    if (widget.isSpeakerView) {
-      final pinned = _pinnedIdentity == null
-          ? null
-          : _participants.where((p) => p.identity == _pinnedIdentity).firstOrNull;
-      // A stale pin (participant left) falls back to auto speaker-follow.
-      if (_pinnedIdentity != null && pinned == null) _pinnedIdentity = null;
-      final mainParticipant = pinned ?? _activeSpeaker ?? _participants.first;
-      final others = _participants.where((p) => p.identity != mainParticipant.identity).toList();
-      final isPinned = pinned != null;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isDesktop = constraints.maxWidth >= 800;
 
-      return Column(
-        children: [
-          Expanded(
-            flex: 3,
-            child: Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Stack(
-                children: [
-                  Positioned.fill(child: VideoWidget(participant: mainParticipant)),
-                  if (isPinned)
-                    Positioned(
-                      top: 8,
-                      right: 8,
-                      child: GestureDetector(
-                        onTap: () => setState(() => _pinnedIdentity = null),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: Colors.black54,
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.push_pin, size: 14, color: Colors.white),
-                              SizedBox(width: 4),
-                              Text('Pinned - tap to unpin', style: TextStyle(color: Colors.white, fontSize: 11)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          if (others.isNotEmpty)
-            Expanded(
-              flex: 1,
-              child: ListView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                scrollDirection: Axis.horizontal,
-                itemCount: others.length,
-                itemBuilder: (context, index) {
-                  final p = others[index];
-                  return AspectRatio(
-                    aspectRatio: 16 / 9,
-                    child: Padding(
-                      padding: const EdgeInsets.all(4.0),
-                      child: GestureDetector(
-                        onTap: () => setState(() => _pinnedIdentity = p.identity),
-                        child: VideoWidget(participant: p),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-        ],
-      );
-    }
+        // Auto-detect screen sharing participant
+        final screenSharingParticipant = _participants.where((p) {
+          return p.videoTrackPublications.any((pub) => pub.source == TrackSource.screenShareVideo);
+        }).firstOrNull;
 
-    int crossAxisCount = 1;
-    if (_participants.length > 1 && _participants.length <= 4) {
-      crossAxisCount = 2;
-    } else if (_participants.length > 4) {
-      crossAxisCount = 3;
-    }
+        if (widget.isSpeakerView) {
+          final pinned = _pinnedIdentity == null
+              ? null
+              : _participants.where((p) => p.identity == _pinnedIdentity).firstOrNull;
+          if (_pinnedIdentity != null && pinned == null) _pinnedIdentity = null;
 
-    final grid = GridView.builder(
-      padding: const EdgeInsets.all(8),
-      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: crossAxisCount,
-        childAspectRatio: 16 / 9,
-        mainAxisSpacing: 8,
-        crossAxisSpacing: 8,
-      ),
-      itemCount: _participants.length,
-      itemBuilder: (context, index) {
-        return VideoWidget(participant: _participants[index]);
-      },
-    );
+          final mainParticipant = pinned ?? screenSharingParticipant ?? _activeSpeaker ?? _participants.first;
+          final others = _participants.where((p) => p.identity != mainParticipant.identity).toList();
+          final isPinned = pinned != null;
 
-    // Alone in the room - reassure the user it's working and they're just
-    // waiting, rather than leaving a single silent tile that looks stuck.
-    if (_participants.length == 1) {
-      return Column(
-        children: [
-          Expanded(child: grid),
-          Padding(
-            padding: const EdgeInsets.only(bottom: 110, left: 24, right: 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+          if (isDesktop) {
+            // Web / Desktop Landscape: Large main speaker on left, vertical sidebar on right
+            return Row(
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white54),
-                    ),
-                    const SizedBox(width: 10),
-                    Flexible(
-                      child: Text(
-                        "You're the only one here.",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13),
-                      ),
-                    ),
-                  ],
-                ),
-                if (widget.onCopyInvite != null) ...[
-                  const SizedBox(height: 14),
-                  ElevatedButton.icon(
-                    onPressed: widget.onCopyInvite,
-                    icon: const Icon(Icons.link_rounded, size: 18),
-                    label: const Text('Copy invite link'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white.withValues(alpha: 0.15),
-                      foregroundColor: Colors.white,
-                      elevation: 0,
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(12, 12, 6, 95),
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: VideoWidget(participant: mainParticipant, isMainSpeaker: true),
+                        ),
+                        if (isPinned)
+                          Positioned(
+                            top: 12,
+                            right: 12,
+                            child: GestureDetector(
+                              onTap: () => setState(() => _pinnedIdentity = null),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.black54,
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: Colors.white24),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.push_pin, size: 14, color: Colors.white),
+                                    SizedBox(width: 6),
+                                    Text('Pinned · Tap to unpin', style: TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                   ),
-                ],
+                ),
+                if (others.isNotEmpty)
+                  SizedBox(
+                    width: 230,
+                    child: ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(6, 12, 12, 95),
+                      itemCount: others.length,
+                      itemBuilder: (context, index) {
+                        final p = others[index];
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8.0),
+                          child: AspectRatio(
+                            aspectRatio: 16 / 9,
+                            child: GestureDetector(
+                              onTap: () => setState(() => _pinnedIdentity = p.identity),
+                              child: VideoWidget(participant: p),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
               ],
-            ),
+            );
+          } else {
+            // Mobile Portrait: Large main speaker on top, horizontal bottom strip
+            return Column(
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 10, 10, 6),
+                    child: Stack(
+                      children: [
+                        Positioned.fill(
+                          child: VideoWidget(participant: mainParticipant, isMainSpeaker: true),
+                        ),
+                        if (isPinned)
+                          Positioned(
+                            top: 10,
+                            right: 10,
+                            child: GestureDetector(
+                              onTap: () => setState(() => _pinnedIdentity = null),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.black54,
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(color: Colors.white24),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.push_pin, size: 14, color: Colors.white),
+                                    SizedBox(width: 4),
+                                    Text('Pinned', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600)),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (others.isNotEmpty)
+                  SizedBox(
+                    height: 115,
+                    child: ListView.builder(
+                      padding: const EdgeInsets.fromLTRB(10, 0, 10, 85),
+                      scrollDirection: Axis.horizontal,
+                      itemCount: others.length,
+                      itemBuilder: (context, index) {
+                        final p = others[index];
+                        return AspectRatio(
+                          aspectRatio: 4 / 3,
+                          child: Padding(
+                            padding: const EdgeInsets.only(right: 8.0),
+                            child: GestureDetector(
+                              onTap: () => setState(() => _pinnedIdentity = p.identity),
+                              child: VideoWidget(participant: p),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  )
+                else
+                  const SizedBox(height: 85),
+              ],
+            );
+          }
+        }
+
+        // ── Grid View ──
+        int crossAxisCount;
+        double childAspectRatio;
+
+        if (isDesktop) {
+          if (_participants.length <= 2) {
+            crossAxisCount = _participants.length;
+            childAspectRatio = 16 / 9;
+          } else if (_participants.length <= 4) {
+            crossAxisCount = 2;
+            childAspectRatio = 16 / 9;
+          } else if (_participants.length <= 9) {
+            crossAxisCount = 3;
+            childAspectRatio = 16 / 9;
+          } else {
+            crossAxisCount = 4;
+            childAspectRatio = 16 / 9;
+          }
+        } else {
+          // Mobile Grid View
+          if (_participants.length == 1) {
+            crossAxisCount = 1;
+            childAspectRatio = 0.9;
+          } else if (_participants.length == 2) {
+            crossAxisCount = 1;
+            childAspectRatio = 1.35;
+          } else {
+            crossAxisCount = 2;
+            childAspectRatio = 1.15;
+          }
+        }
+
+        final grid = GridView.builder(
+          padding: const EdgeInsets.only(left: 10, right: 10, top: 10, bottom: 95),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            childAspectRatio: childAspectRatio,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
           ),
-        ],
-      );
-    }
+          itemCount: _participants.length,
+          itemBuilder: (context, index) {
+            return VideoWidget(participant: _participants[index]);
+          },
+        );
 
-    return grid;
+        if (_participants.length == 1) {
+          return Stack(
+            children: [
+              Positioned.fill(child: grid),
+              Positioned(
+                bottom: 95,
+                left: 20,
+                right: 20,
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.75),
+                      borderRadius: BorderRadius.circular(AppRadius.full),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.15)),
+                      boxShadow: AppShadows.card,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+                        ),
+                        const SizedBox(width: 10),
+                        const Text(
+                          "You're the only one here",
+                          style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                        ),
+                        if (widget.onCopyInvite != null) ...[
+                          const SizedBox(width: 12),
+                          GestureDetector(
+                            onTap: widget.onCopyInvite,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.2),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.link_rounded, size: 14, color: Colors.white),
+                                  SizedBox(width: 4),
+                                  Text('Copy Link', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+
+        return grid;
+      },
+    );
   }
-
 }
 
 class VideoWidget extends StatefulWidget {
   final Participant participant;
+  final bool isMainSpeaker;
 
-  const VideoWidget({super.key, required this.participant});
+  const VideoWidget({
+    super.key,
+    required this.participant,
+    this.isMainSpeaker = false,
+  });
 
   @override
   State<VideoWidget> createState() => _VideoWidgetState();
@@ -1193,11 +1431,10 @@ class _VideoWidgetState extends State<VideoWidget> {
 
   @override
   Widget build(BuildContext context) {
-    // Prioritize screen share if available
     var videoTrack = widget.participant.videoTrackPublications
         .where((p) => p.source == TrackSource.screenShareVideo)
         .firstOrNull?.track as VideoTrack?;
-        
+
     final isScreenShare = videoTrack != null;
     final isSpeaking = widget.participant.isSpeaking;
 
@@ -1205,25 +1442,36 @@ class _VideoWidgetState extends State<VideoWidget> {
         .where((p) => p.source == TrackSource.camera)
         .firstOrNull?.track as VideoTrack?;
 
-    // Fallback if no specific source found
     videoTrack ??= widget.participant.videoTrackPublications.firstOrNull?.track as VideoTrack?;
-    
-    // Base decoration
+
+    final displayName = widget.participant.name.isNotEmpty
+        ? widget.participant.name
+        : (widget.participant.identity.isNotEmpty ? widget.participant.identity : 'Guest');
+
+    final primaryAccent = context.colors.primary;
+    final initials = _getParticipantInitials(displayName);
+    final avatarGradient = _getAvatarGradient(displayName);
+
     final boxDecoration = BoxDecoration(
-      borderRadius: BorderRadius.circular(12),
-      color: Colors.black,
-      border: isSpeaking 
-          ? Border.all(color: Colors.blueAccent, width: 3)
-          : Border.all(color: Colors.transparent, width: 3),
+      borderRadius: BorderRadius.circular(AppRadius.md),
+      color: const Color(0xFF161A22),
+      border: isSpeaking
+          ? Border.all(color: primaryAccent, width: 2.5)
+          : Border.all(color: Colors.white.withValues(alpha: 0.1), width: 1.5),
       boxShadow: isSpeaking
-          ? [BoxShadow(color: Colors.blueAccent.withValues(alpha: 0.5), blurRadius: 10, spreadRadius: 2)]
+          ? [
+              BoxShadow(
+                color: primaryAccent.withValues(alpha: 0.5),
+                blurRadius: 12,
+                spreadRadius: 2,
+              ),
+            ]
           : [],
     );
 
     if (videoTrack != null) {
       return AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        margin: const EdgeInsets.all(4),
         clipBehavior: Clip.antiAlias,
         decoration: boxDecoration,
         child: Stack(
@@ -1237,10 +1485,17 @@ class _VideoWidgetState extends State<VideoWidget> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                   decoration: BoxDecoration(
-                    color: Colors.red,
-                    borderRadius: BorderRadius.circular(12),
+                    color: Colors.redAccent,
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Text('Screen Share', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.screen_share_rounded, size: 12, color: Colors.white),
+                      SizedBox(width: 4),
+                      Text('Screen Share', style: TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                    ],
+                  ),
                 ),
               ),
             Positioned(
@@ -1253,8 +1508,8 @@ class _VideoWidgetState extends State<VideoWidget> {
                   return Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                     decoration: BoxDecoration(
-                      color: Colors.amber.shade700,
-                      borderRadius: BorderRadius.circular(12),
+                      color: Colors.amber.shade600,
+                      borderRadius: BorderRadius.circular(10),
                     ),
                     child: const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1272,24 +1527,29 @@ class _VideoWidgetState extends State<VideoWidget> {
               bottom: 8,
               left: 8,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(4),
+                  color: Colors.black.withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
                 ),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (!widget.participant.isMicrophoneEnabled()) ...[
-                      const Icon(Icons.mic_off, color: Colors.redAccent, size: 14),
+                      const Icon(Icons.mic_off_rounded, color: Colors.redAccent, size: 13),
                       const SizedBox(width: 4),
                     ] else if (isSpeaking) ...[
-                      const Icon(Icons.volume_up, color: Colors.blueAccent, size: 14),
+                      Icon(Icons.graphic_eq_rounded, color: primaryAccent, size: 14),
                       const SizedBox(width: 4),
                     ],
                     Text(
-                      widget.participant.name.isNotEmpty ? widget.participant.name : widget.participant.identity,
-                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                      displayName,
+                      style: GoogleFonts.plusJakartaSans(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ],
                 ),
@@ -1299,38 +1559,215 @@ class _VideoWidgetState extends State<VideoWidget> {
         ),
       );
     } else {
+      // ── Camera OFF Avatar View ──
+      final avatarSize = widget.isMainSpeaker ? 72.0 : 48.0;
+
       return AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        margin: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: Colors.grey[800],
-          borderRadius: BorderRadius.circular(12),
-          border: isSpeaking 
-              ? Border.all(color: Colors.blueAccent, width: 3)
-              : Border.all(color: Colors.transparent, width: 3),
-          boxShadow: isSpeaking
-              ? [BoxShadow(color: Colors.blueAccent.withValues(alpha: 0.5), blurRadius: 10, spreadRadius: 2)]
-              : [],
-        ),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (!widget.participant.isMicrophoneEnabled())
-                const Icon(Icons.mic_off, color: Colors.redAccent, size: 32)
-              else if (isSpeaking)
-                const Icon(Icons.volume_up, color: Colors.blueAccent, size: 32)
-              else
-                const Icon(Icons.person, color: Colors.white54, size: 32),
-              const SizedBox(height: 8),
-              Text(
-                widget.participant.name.isNotEmpty ? widget.participant.name : widget.participant.identity,
-                style: const TextStyle(color: Colors.white),
+        decoration: boxDecoration,
+        child: Stack(
+          children: [
+            Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    width: avatarSize,
+                    height: avatarSize,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: avatarGradient,
+                      boxShadow: isSpeaking
+                          ? [
+                              BoxShadow(
+                                color: primaryAccent.withValues(alpha: 0.6),
+                                blurRadius: 16,
+                                spreadRadius: 4,
+                              )
+                            ]
+                          : [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.3),
+                                blurRadius: 8,
+                              )
+                            ],
+                    ),
+                    child: Center(
+                      child: Text(
+                        initials,
+                        style: GoogleFonts.plusJakartaSans(
+                          color: Colors.white,
+                          fontSize: widget.isMainSpeaker ? 26 : 18,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    displayName,
+                    style: GoogleFonts.plusJakartaSans(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+            Positioned(
+              top: 8,
+              left: 8,
+              child: Builder(
+                builder: (context) {
+                  final isHandRaised = context.findAncestorStateOfType<_LiveMeetingScreenState>()?._raisedHandQueue.contains(widget.participant.identity) ?? false;
+                  if (!isHandRaised) return const SizedBox.shrink();
+                  return Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.shade600,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.front_hand_rounded, color: Colors.black, size: 12),
+                        SizedBox(width: 4),
+                        Text('Hand Raised', style: TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            Positioned(
+              bottom: 8,
+              left: 8,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.7),
+                  borderRadius: BorderRadius.circular(AppRadius.sm),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (!widget.participant.isMicrophoneEnabled()) ...[
+                      const Icon(Icons.mic_off_rounded, color: Colors.redAccent, size: 13),
+                      const SizedBox(width: 4),
+                    ] else if (isSpeaking) ...[
+                      Icon(Icons.graphic_eq_rounded, color: primaryAccent, size: 14),
+                      const SizedBox(width: 4),
+                    ],
+                    Text(
+                      displayName,
+                      style: GoogleFonts.plusJakartaSans(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
+  }
+}
+
+class _LiveCaptionsOverlay extends StatelessWidget {
+  final String speaker;
+  final String caption;
+
+  const _LiveCaptionsOverlay({required this.speaker, required this.caption});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.8),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.2)),
+        boxShadow: AppShadows.card,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: context.colors.primary.withValues(alpha: 0.3),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.closed_caption_rounded, color: Colors.white, size: 16),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: RichText(
+              text: TextSpan(
+                children: [
+                  TextSpan(
+                    text: '$speaker: ',
+                    style: GoogleFonts.plusJakartaSans(
+                      color: context.colors.primary,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                    ),
+                  ),
+                  TextSpan(
+                    text: caption,
+                    style: GoogleFonts.plusJakartaSans(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w500,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    ).animate().fadeIn(duration: 250.ms).slideY(begin: 0.2, end: 0, duration: 250.ms);
+  }
+}
+
+class _LiveHighlightToast extends StatelessWidget {
+  final String highlightText;
+
+  const _LiveHighlightToast({required this.highlightText});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF10B981),
+        borderRadius: BorderRadius.circular(AppRadius.full),
+        boxShadow: AppShadows.card,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 16),
+          const SizedBox(width: 8),
+          Text(
+            highlightText,
+            style: GoogleFonts.plusJakartaSans(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    ).animate().fadeIn(duration: 300.ms).scale(begin: const Offset(0.8, 0.8), end: const Offset(1, 1));
   }
 }

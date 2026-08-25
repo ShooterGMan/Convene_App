@@ -105,8 +105,14 @@ class _ThreadsListScreenState extends ConsumerState<ThreadsListScreen> {
             // Thread cards
             threadsAsync.when(
               data: (threadsData) {
-                final threads = List<ContextThread>.from(threadsData)
-                  ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+                final query = _searchController.text.trim().toLowerCase();
+                final threads = threadsData.where((t) {
+                  if (query.isEmpty) return true;
+                  if (t.meetingTitle.toLowerCase().contains(query)) return true;
+                  if (t.participants.any((p) => p.name.toLowerCase().contains(query))) return true;
+                  if (t.blocks.any((b) => b.content.toLowerCase().contains(query))) return true;
+                  return false;
+                }).toList()..sort((a, b) => b.createdAt.compareTo(a.createdAt));
                 
                 if (threads.isEmpty) {
                   return SliverToBoxAdapter(
@@ -121,11 +127,15 @@ class _ThreadsListScreenState extends ConsumerState<ThreadsListScreen> {
                               color: context.colors.primaryLight.withValues(alpha: 0.2),
                               shape: BoxShape.circle,
                             ),
-                            child: Icon(Icons.forum_outlined, size: 48, color: context.colors.primary),
+                            child: Icon(
+                              _isSearching ? Icons.search_off_rounded : Icons.forum_outlined,
+                              size: 48,
+                              color: context.colors.primary,
+                            ),
                           ),
                           SizedBox(height: 24),
                           Text(
-                            'No topics yet',
+                            _isSearching ? 'No matching topics' : 'No topics yet',
                             style: GoogleFonts.plusJakartaSans(
                               fontSize: 20,
                               fontWeight: FontWeight.w700,
@@ -134,7 +144,9 @@ class _ThreadsListScreenState extends ConsumerState<ThreadsListScreen> {
                           ),
                           SizedBox(height: 8),
                           Text(
-                            'Topics appear here automatically once your meetings are transcribed and summarized by Convene AI.',
+                            _isSearching
+                                ? 'No meeting summaries matched "$query". Try searching for another topic or attendee name.'
+                                : 'Topics appear here automatically once your meetings are transcribed and summarized by Convene AI.',
                             textAlign: TextAlign.center,
                             style: GoogleFonts.plusJakartaSans(
                               fontSize: 14,

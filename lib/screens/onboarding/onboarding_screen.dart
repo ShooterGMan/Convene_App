@@ -37,6 +37,12 @@ const _slides = <_Slide>[
     body: 'Find every summary under the Threads tab — read the recap, check off '
         'action items, comment, and open the full transcript.',
   ),
+  _Slide(
+    icon: Icons.record_voice_over_rounded,
+    title: 'Voice ID for perfect attribution',
+    body: 'Record a 5-second voice sample in Settings so Convene AI can recognize '
+        'your voice and attribute your quotes in room meetings automatically.',
+  ),
 ];
 
 /// First-run tutorial. Shown once (tracked in onboardingSeenProvider); a swipeable

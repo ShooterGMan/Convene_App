@@ -57,19 +57,64 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
     _init();
   }
 
+  void _clearRelatedNotifications() {
+    final uid = ref.read(currentUserProvider)?.uid;
+    if (uid == null) return;
+    final notifications = ref.read(notificationsProvider).value ?? [];
+    final repo = ref.read(firestoreRepositoryProvider);
+
+    for (final n in notifications) {
+      if (!n.isRead &&
+          (n.relatedId == widget.threadId ||
+              n.route == '/thread/${widget.threadId}' ||
+              (_thread != null && (n.relatedId == _thread!.id || n.relatedId == _thread!.meetingId)))) {
+        repo.markNotificationRead(uid, n.id).catchError((_) {});
+      }
+    }
+  }
+
   Future<void> _init() async {
-    final key = 'topic_seen_${widget.threadId}';
-    final prefs = await SharedPreferences.getInstance();
-    final storedMs = prefs.getInt(key);
-    _lastViewed = storedMs == null ? null : DateTime.fromMillisecondsSinceEpoch(storedMs);
-    final feedbackGiven = prefs.getBool('topic_feedback_${widget.threadId}') ?? false;
-    if (mounted) setState(() => _feedbackGiven = feedbackGiven);
+    try {
+      // 1. Instant cache lookup from threadsProvider so card taps open immediately
+      final threadsAsync = ref.read(threadsProvider);
+      final cachedList = threadsAsync.value ?? [];
+      ContextThread? cachedThread;
+      for (final t in cachedList) {
+        if (t.id == widget.threadId || t.meetingId == widget.threadId) {
+          cachedThread = t;
+          break;
+        }
+      }
 
-    await _fetchThread();
-    await _computeWhatChanged();
+      if (cachedThread != null && mounted) {
+        setState(() {
+          _thread = cachedThread;
+          _blocks = List.from(cachedThread!.blocks);
+          _isLoading = false;
+        });
+      }
 
-    // Record this visit as the new baseline for the next "what changed".
-    await prefs.setInt(key, DateTime.now().millisecondsSinceEpoch);
+      _clearRelatedNotifications();
+
+      final key = 'topic_seen_${widget.threadId}';
+      final prefs = await SharedPreferences.getInstance();
+      final storedMs = prefs.getInt(key);
+      _lastViewed = storedMs == null ? null : DateTime.fromMillisecondsSinceEpoch(storedMs);
+      final feedbackGiven = prefs.getBool('topic_feedback_${widget.threadId}') ?? false;
+      if (mounted) setState(() => _feedbackGiven = feedbackGiven);
+
+      await _fetchThread();
+      _clearRelatedNotifications();
+      await _computeWhatChanged();
+
+      await prefs.setInt(key, DateTime.now().millisecondsSinceEpoch);
+    } catch (e) {
+      debugPrint("Thread init error: $e");
+    } finally {
+      if (mounted && _isLoading) {
+        setState(() => _isLoading = false);
+      }
+    }
   }
 
   Future<void> _computeWhatChanged() async {
@@ -106,30 +151,57 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
 
   Future<void> _fetchThread() async {
     try {
-      final doc = await FirebaseFirestore.instance.collection('threads').doc(widget.threadId).get();
-      if (doc.exists) {
-        final data = doc.data()!;
+      // 1. Try directly fetching doc by threadId
+      var doc = await FirebaseFirestore.instance.collection('threads').doc(widget.threadId).get();
+
+      // 2. If not found by doc ID, try searching by meetingId == widget.threadId
+      if (!doc.exists) {
+        final querySnap = await FirebaseFirestore.instance
+            .collection('threads')
+            .where('meetingId', isEqualTo: widget.threadId)
+            .limit(1)
+            .get();
+        if (querySnap.docs.isNotEmpty) {
+          doc = querySnap.docs.first;
+        }
+      }
+
+      // 3. Fallback: check meetings collection for threadId mapping
+      if (!doc.exists) {
+        final meetingSnap = await FirebaseFirestore.instance.collection('meetings').doc(widget.threadId).get();
+        if (meetingSnap.exists && meetingSnap.data() != null) {
+          final realThreadId = meetingSnap.data()!['threadId'] as String?;
+          if (realThreadId != null && realThreadId.isNotEmpty) {
+            doc = await FirebaseFirestore.instance.collection('threads').doc(realThreadId).get();
+          }
+        }
+      }
+
+      if (doc.exists && doc.data() != null) {
+        final data = Map<String, dynamic>.from(doc.data()!);
         data['id'] = doc.id;
-        final thread = ContextThread.fromJson(data);
+        final thread = ContextThread.fromJson(data, docId: doc.id);
         if (mounted) {
           setState(() {
             _thread = thread;
             _blocks = List.from(thread.blocks);
             _isLoading = false;
+            _error = null;
           });
         }
       } else {
-        if (mounted) {
+        if (mounted && _thread == null) {
           setState(() {
-            _error = "Thread not found";
+            _error = "Topic summary not found";
             _isLoading = false;
           });
         }
       }
     } catch (e) {
-      if (mounted) {
+      debugPrint("Fetch thread error: $e");
+      if (mounted && _thread == null) {
         setState(() {
-          _error = e.toString();
+          _error = "Failed to load topic: $e";
           _isLoading = false;
         });
       }

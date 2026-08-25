@@ -18,7 +18,6 @@ import '../../repositories/firestore_repository.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/live_soon_banner.dart';
 import '../../widgets/meeting_card.dart';
-import '../../widgets/mini_month_calendar.dart';
 import '../../widgets/notification_bell.dart';
 import '../../widgets/schedule_meeting_sheet.dart';
 
@@ -49,9 +48,7 @@ class UpcomingMeetingsScreen extends ConsumerStatefulWidget {
 }
 
 class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen> {
-  DateTime? _selectedDate; // shared by the 7-day strip and the month calendar
-  DateTime _visibleMonth = DateTime(DateTime.now().year, DateTime.now().month);
-  bool _calendarExpanded = false;
+  DateTime? _selectedDate; // top date picker filter
   bool _allMeetingsExpanded = false;
 
   // Filters only apply inside the "All meetings" disclosure, keeping the main
@@ -82,7 +79,6 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
     final invitesAsync = ref.watch(pendingInvitesProvider);
     final groupsAsync = ref.watch(groupsProvider);
     final groups = groupsAsync.maybeWhen(data: (g) => g, orElse: () => const <Group>[]);
-    final meetings = meetingsAsync.maybeWhen(data: (m) => m, orElse: () => const <Meeting>[]);
     final threads = threadsAsync.maybeWhen(data: (t) => t, orElse: () => const <ContextThread>[]);
     final invites = invitesAsync.maybeWhen(data: (i) => i, orElse: () => const <GroupInvite>[]);
 
@@ -108,17 +104,21 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       _buildHeader(context, selfUser.name),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          _buildTopCalendarPicker(context),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
                       _buildPrimaryActions(context),
                       const SizedBox(height: 16),
                       const LiveSoonBanner(),
-                      _buildDateStrip(context, meetings),
-                      const SizedBox(height: 24),
+                      const SizedBox(height: 16),
                       _buildNextUp(context, meetingsAsync),
                       _buildNeedsAttention(context, invites, threads, selfUser.name),
+                      _buildMyActionItemsWidget(context, threads, selfUser.name),
                       _buildRecentTopics(context, threads),
-                      const SizedBox(height: 8),
-                      _buildCalendarDisclosure(context, meetings),
                       const SizedBox(height: 12),
                       _buildAllMeetingsDisclosure(context, meetingsAsync, groups),
                     ],
@@ -151,6 +151,92 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
         ),
         const NotificationBell(),
       ],
+    );
+  }
+
+  Widget _buildTopCalendarPicker(BuildContext context) {
+    final label = _selectedDate == null
+        ? 'All Meetings'
+        : _isSameDay(_selectedDate!, _today)
+            ? 'Today · ${DateFormat('MMM d').format(_today)}'
+            : DateFormat('EEE, MMM d').format(_selectedDate!);
+
+    return GestureDetector(
+      onTap: () async {
+        final picked = await showDatePicker(
+          context: context,
+          initialDate: _selectedDate ?? DateTime.now(),
+          firstDate: DateTime.now().subtract(const Duration(days: 365)),
+          lastDate: DateTime.now().add(const Duration(days: 365)),
+          builder: (context, child) {
+            return Theme(
+              data: Theme.of(context).copyWith(
+                colorScheme: ColorScheme.light(
+                  primary: context.colors.primary,
+                  onPrimary: Colors.white,
+                  surface: context.colors.surface,
+                  onSurface: context.colors.textMain,
+                ),
+              ),
+              child: child!,
+            );
+          },
+        );
+        if (picked != null) {
+          setState(() => _selectedDate = picked);
+        }
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: context.colors.surface,
+          borderRadius: BorderRadius.circular(AppRadius.full),
+          boxShadow: AppShadows.card,
+          border: Border.all(
+            color: _selectedDate != null ? context.colors.primary.withValues(alpha: 0.5) : context.colors.border,
+            width: 1.5,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.calendar_today_rounded,
+              size: 15,
+              color: _selectedDate != null ? context.colors.primary : context.colors.textMuted,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: _selectedDate != null ? context.colors.primary : context.colors.textMain,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Icon(
+              Icons.keyboard_arrow_down_rounded,
+              size: 18,
+              color: _selectedDate != null ? context.colors.primary : context.colors.textMuted,
+            ),
+            if (_selectedDate != null) ...[
+              const SizedBox(width: 6),
+              GestureDetector(
+                onTap: () => setState(() => _selectedDate = null),
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: context.colors.textMuted.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(Icons.close_rounded, size: 12, color: context.colors.textMuted),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
@@ -199,81 +285,7 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
     ).animate().fadeIn(delay: 100.ms, duration: 400.ms);
   }
 
-  // ---- 7-day date strip ---------------------------------------------------
 
-  Widget _buildDateStrip(BuildContext context, List<Meeting> meetings) {
-    final counts = <DateTime, int>{};
-    for (final m in meetings) {
-      final key = DateTime(m.startTime.year, m.startTime.month, m.startTime.day);
-      counts[key] = (counts[key] ?? 0) + 1;
-    }
-    final days = List.generate(7, (i) => _today.add(Duration(days: i)));
-
-    return SizedBox(
-      height: 76,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        physics: const BouncingScrollPhysics(),
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        itemCount: days.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 8),
-        itemBuilder: (context, i) {
-          final day = days[i];
-          final isSelected = _selectedDate != null && _isSameDay(_selectedDate!, day);
-          final isToday = _isSameDay(day, _today);
-          final count = counts[day] ?? 0;
-          return GestureDetector(
-            onTap: () => setState(() => _selectedDate = isSelected ? null : day),
-            child: Container(
-              width: 52,
-              decoration: BoxDecoration(
-                color: isSelected ? context.colors.primary : context.colors.surface,
-                borderRadius: BorderRadius.circular(AppRadius.md),
-                boxShadow: AppShadows.card,
-                border: isToday && !isSelected
-                    ? Border.all(color: context.colors.primary.withValues(alpha: 0.6), width: 1.5)
-                    : null,
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    DateFormat('E').format(day).toUpperCase(),
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.5,
-                      color: isSelected ? Colors.white.withValues(alpha: 0.9) : context.colors.textMuted,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${day.day}',
-                    style: GoogleFonts.plusJakartaSans(
-                      fontSize: 17,
-                      fontWeight: FontWeight.w800,
-                      color: isSelected ? Colors.white : context.colors.textMain,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Container(
-                    width: 5,
-                    height: 5,
-                    decoration: BoxDecoration(
-                      color: count > 0
-                          ? (isSelected ? Colors.white : context.colors.primary)
-                          : Colors.transparent,
-                      shape: BoxShape.circle,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    ).animate().fadeIn(delay: 150.ms, duration: 400.ms);
-  }
 
   // ---- Next up ------------------------------------------------------------
 
@@ -421,6 +433,75 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
     );
   }
 
+  Future<void> _toggleActionItem(ContextThread thread, SmartBlock block) async {
+    final updatedBlocks = thread.blocks.map((b) {
+      if (b.id == block.id) {
+        return b.copyWith(isCompleted: !b.isCompleted);
+      }
+      return b;
+    }).toList();
+
+    try {
+      await ref.read(firestoreRepositoryProvider).updateThreadBlocks(thread.id, updatedBlocks);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(block.isCompleted ? 'Marked incomplete' : 'Action item completed! 🎉'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update action item: $e')),
+        );
+      }
+    }
+  }
+
+  Widget _buildMyActionItemsWidget(
+    BuildContext context,
+    List<ContextThread> threads,
+    String selfName,
+  ) {
+    final myFirstName = selfName.split(' ').first.toLowerCase();
+    final myActions = <({ContextThread thread, SmartBlock block})>[];
+    for (final thread in threads) {
+      for (final block in thread.blocks) {
+        if (block.type == SmartBlockType.actionItem &&
+            block.assignee != null &&
+            block.assignee!.trim().toLowerCase() == myFirstName &&
+            !block.isCompleted) {
+          myActions.add((thread: thread, block: block));
+        }
+      }
+    }
+
+    if (myActions.isEmpty) return const SizedBox.shrink();
+
+    return _sectionShell(
+      context,
+      title: 'My Action Items (${myActions.length})',
+      child: Column(
+        children: [
+          for (final item in myActions)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _AttentionTile(
+                icon: Icons.circle_outlined,
+                accent: context.colors.primary,
+                title: item.block.content,
+                subtitle: 'From ${item.thread.meetingTitle}',
+                onTap: () => context.push('/thread/${item.thread.id}'),
+                onCheckTap: () => _toggleActionItem(item.thread, item.block),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
   // ---- Recent topics ------------------------------------------------------
 
   Widget _buildRecentTopics(BuildContext context, List<ContextThread> threads) {
@@ -450,38 +531,7 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
     );
   }
 
-  // ---- Calendar disclosure ------------------------------------------------
 
-  Widget _buildCalendarDisclosure(BuildContext context, List<Meeting> meetings) {
-    final eventCounts = <DateTime, int>{};
-    for (final m in meetings) {
-      final key = DateTime(m.startTime.year, m.startTime.month, m.startTime.day);
-      eventCounts[key] = (eventCounts[key] ?? 0) + 1;
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _disclosureRow(
-          context,
-          icon: Icons.calendar_month_rounded,
-          label: 'Calendar · ${DateFormat('MMMM').format(_visibleMonth)}',
-          expanded: _calendarExpanded,
-          onTap: () => setState(() => _calendarExpanded = !_calendarExpanded),
-        ),
-        if (_calendarExpanded) ...[
-          const SizedBox(height: 12),
-          MiniMonthCalendar(
-            visibleMonth: _visibleMonth,
-            selectedDate: _selectedDate,
-            eventCounts: eventCounts,
-            onDaySelected: (date) => setState(() => _selectedDate = date),
-            onMonthChanged: (month) => setState(() => _visibleMonth = month),
-          ),
-        ],
-      ],
-    );
-  }
 
   // ---- All meetings disclosure (past + filters) ---------------------------
 
@@ -900,6 +950,7 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
       endTime: now.add(const Duration(hours: 1)),
       type: MeetingType.meet,
       participants: [user],
+      isInstant: true,
     );
     try {
       await ref.read(firestoreRepositoryProvider).createMeeting(meeting).timeout(const Duration(seconds: 10));
@@ -929,6 +980,7 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
       endTime: now.add(const Duration(hours: 1)),
       type: MeetingType.room,
       participants: [user],
+      isInstant: true,
     );
 
     try {
@@ -958,6 +1010,7 @@ class _AttentionTile extends StatelessWidget {
   final String title;
   final String subtitle;
   final VoidCallback onTap;
+  final VoidCallback? onCheckTap;
 
   const _AttentionTile({
     required this.icon,
@@ -965,6 +1018,7 @@ class _AttentionTile extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.onTap,
+    this.onCheckTap,
   });
 
   @override
@@ -981,8 +1035,18 @@ class _AttentionTile extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(icon, size: 20, color: accent),
-            const SizedBox(width: 12),
+            if (onCheckTap != null)
+              GestureDetector(
+                onTap: onCheckTap,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Icon(icon, size: 22, color: accent),
+                ),
+              )
+            else ...[
+              Icon(icon, size: 20, color: accent),
+              const SizedBox(width: 12),
+            ],
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

@@ -1,6 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, debugPrint;
 import 'package:google_sign_in/google_sign_in.dart' as g_sign_in;
 import '../providers/auth_provider.dart';
 import '../services/push_notification_service.dart';
@@ -58,6 +58,14 @@ class AuthRepository {
       }
     } catch (e) {
       throw Exception('Failed to create user: $e');
+    }
+  }
+
+  Future<void> sendPasswordResetEmail(String email) async {
+    try {
+      await _auth.sendPasswordResetEmail(email: email.trim());
+    } catch (e) {
+      throw Exception('Failed to send password reset email: $e');
     }
   }
 
@@ -147,7 +155,7 @@ class AuthRepository {
           return _webAccessToken;
         }
       } catch (e) {
-        print('Could not refresh web access token: $e');
+        debugPrint('Could not refresh web access token: $e');
       }
       return null;
     }

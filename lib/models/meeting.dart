@@ -20,6 +20,7 @@ class Meeting {
   final String? summaryError; // non-null if summary generation failed/timed out
   final List<String> guestEmails;
   final bool isImportant;
+  final bool isInstant;
   final Map<String, String> rsvps; // uid -> 'yes' | 'no' | 'maybe'
 
   const Meeting({
@@ -37,6 +38,7 @@ class Meeting {
     this.summaryError,
     this.guestEmails = const [],
     this.isImportant = false,
+    this.isInstant = false,
     this.rsvps = const {},
   });
 
@@ -72,6 +74,7 @@ class Meeting {
               .toList() ??
           [],
       isImportant: json['isImportant'] as bool? ?? false,
+      isInstant: json['isInstant'] as bool? ?? false,
       rsvps: (json['rsvps'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
     );
   }
@@ -94,6 +97,7 @@ class Meeting {
       'summaryStatus': summaryStatus,
       'guestEmails': guestEmails,
       'isImportant': isImportant,
+      'isInstant': isInstant,
       'rsvps': rsvps,
     };
   }
@@ -133,12 +137,20 @@ class Meeting {
 
   /// Whether the meeting is currently happening
   bool get isLive {
+    if (isPast) return false;
     final now = DateTime.now();
+    if (isInstant) return true;
     return now.isAfter(startTime) && now.isBefore(endTime);
   }
 
   /// Whether this meeting has already ended.
-  bool get isPast => DateTime.now().isAfter(endTime);
+  bool get isPast {
+    if (threadId != null || summaryStatus == 'ready' || summaryStatus == 'failed') {
+      return true;
+    }
+    if (isInstant) return false;
+    return DateTime.now().isAfter(endTime);
+  }
 
   RsvpStatus? rsvpFor(String uid) {
     switch (rsvps[uid]) {

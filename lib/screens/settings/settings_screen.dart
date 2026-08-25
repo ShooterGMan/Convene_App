@@ -7,12 +7,14 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../build_info.dart';
 import '../../providers/auth_provider.dart';
+import '../../providers/data_providers.dart';
 import '../../providers/theme_provider.dart';
 import '../../repositories/auth_repository.dart';
 import '../../repositories/firestore_repository.dart';
 import '../../models/user.dart';
 import '../onboarding/onboarding_screen.dart';
 
+import '../../widgets/voice_sample_recorder.dart';
 import '../../theme/app_theme.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -131,6 +133,37 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           ],
                         ),
                       ),
+                      const Divider(height: 1, indent: 20, endIndent: 20),
+                      ListTile(
+                        leading: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: user.hasVoiceprint ? context.colors.primaryLight : context.colors.background,
+                            borderRadius: BorderRadius.circular(AppRadius.sm),
+                          ),
+                          child: Icon(
+                            user.hasVoiceprint ? Icons.record_voice_over_rounded : Icons.mic_none_rounded,
+                            color: context.colors.primary,
+                            size: 22,
+                          ),
+                        ),
+                        title: Text('Voice ID (Voiceprint)', style: _tileTextStyle()),
+                        subtitle: Text(
+                          user.hasVoiceprint ? 'Voice ID Active 🎙️ · Tap to update sample' : 'Record 5s sample for AI voice recognition',
+                          style: _tileSubtitleStyle(),
+                        ),
+                        trailing: Icon(Icons.chevron_right, color: context.colors.textLight),
+                        onTap: () {
+                          showModalBottomSheet(
+                            context: context,
+                            isScrollControlled: true,
+                            backgroundColor: Colors.transparent,
+                            builder: (context) => const VoiceSampleRecorderSheet(),
+                          );
+                        },
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+                      ),
                     ],
                   ),
                   SizedBox(height: 12),
@@ -159,6 +192,40 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           });
                         },
                         contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 12),
+
+                  // ── Integrations ──
+                  _buildSectionHeader('INTEGRATIONS'),
+                  _buildSection(
+                    children: [
+                      SwitchListTile.adaptive(
+                        value: ref.watch(calendarAutoSyncProvider),
+                        activeTrackColor: context.colors.primary,
+                        secondary: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: context.colors.background,
+                            borderRadius: BorderRadius.circular(AppRadius.sm),
+                          ),
+                          child: Icon(Icons.calendar_month_rounded, color: context.colors.primary, size: 22),
+                        ),
+                        title: Text('Google Calendar Auto-Sync', style: _tileTextStyle()),
+                        subtitle: Text('Sync scheduled meetings to Google Calendar', style: _tileSubtitleStyle()),
+                        onChanged: (val) {
+                          ref.read(calendarAutoSyncProvider.notifier).toggle(val);
+                          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(val ? 'Google Calendar Auto-Sync enabled' : 'Google Calendar Auto-Sync disabled'),
+                              duration: const Duration(seconds: 2),
+                            ),
+                          );
+                        },
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
                       ),
                     ],
                   ),
@@ -527,18 +594,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   Widget _buildThemeOption(ThemeMode mode, String label, String subtitle) {
     final currentMode = ref.watch(themeModeProvider);
-    return RadioListTile<ThemeMode>(
-      value: mode,
-      groupValue: currentMode,
-      onChanged: (v) {
-        if (v != null) {
-          ref.read(themeModeProvider.notifier).setThemeMode(v);
-        }
-      },
-      activeColor: context.colors.primary,
+    final isSelected = currentMode == mode;
+    return ListTile(
+      leading: Icon(
+        isSelected ? Icons.radio_button_checked_rounded : Icons.radio_button_unchecked_rounded,
+        color: isSelected ? context.colors.primary : context.colors.textMuted,
+        size: 22,
+      ),
       title: Text(label, style: _tileTextStyle()),
       subtitle: subtitle.isNotEmpty ? Text(subtitle, style: _tileSubtitleStyle()) : null,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+      onTap: () {
+        ref.read(themeModeProvider.notifier).setThemeMode(mode);
+      },
     );
   }
 

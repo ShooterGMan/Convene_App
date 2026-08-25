@@ -102,3 +102,33 @@ export const getLivekitToken = functions.region("asia-south1").runWith({ secrets
 
   return { token, roomName };
 });
+
+export const saveVoiceprint = functions.region("asia-south1").runWith({ secrets: ["EGRESS_BUCKET"] }).https.onCall(async (data, context) => {
+  if (!context.auth) {
+    throw new functions.https.HttpsError("unauthenticated", "User must be logged in.");
+  }
+  const { audioBase64, mimeType } = data;
+  if (!audioBase64 || typeof audioBase64 !== "string") {
+    throw new functions.https.HttpsError("invalid-argument", "audioBase64 is required.");
+  }
+
+  const userId = context.auth.uid;
+  const buffer = Buffer.from(audioBase64, "base64");
+  const bucketName = requiredEnv("EGRESS_BUCKET");
+  const bucket = admin.storage().bucket(bucketName);
+  const file = bucket.file(`users/${userId}/voiceprint.ogg`);
+
+  await file.save(buffer, {
+    metadata: {
+      contentType: mimeType || "audio/ogg",
+    },
+  });
+
+  const db = admin.firestore();
+  await db.collection("users").doc(userId).set(
+    { hasVoiceprint: true, voiceprintUpdatedAt: admin.firestore.FieldValue.serverTimestamp() },
+    { merge: true }
+  );
+
+  return { success: true };
+});

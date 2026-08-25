@@ -36,6 +36,12 @@ class FirestoreRepository {
     return null;
   }
 
+  Future<void> updateUserVoiceprintStatus(String id, bool hasVoiceprint) async {
+    await _firestore.collection('users').doc(id).set({
+      'hasVoiceprint': hasVoiceprint,
+    }, SetOptions(merge: true));
+  }
+
   Future<void> deleteUser(String id) async {
     await _firestore.collection('users').doc(id).delete();
   }
@@ -143,7 +149,11 @@ class FirestoreRepository {
           );
 
     return query.snapshots().map((snapshot) {
-      return snapshot.docs.map((doc) => ContextThread.fromJson(doc.data())).toList();
+      return snapshot.docs.map((doc) {
+        final data = Map<String, dynamic>.from(doc.data());
+        data['id'] = doc.id;
+        return ContextThread.fromJson(data, docId: doc.id);
+      }).toList();
     });
   }
 

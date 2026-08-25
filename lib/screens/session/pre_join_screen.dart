@@ -1,10 +1,15 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:livekit_client/livekit_client.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../providers/auth_provider.dart';
 import '../../theme/app_theme.dart';
+import '../../utils/web_audio_analyser.dart';
 import '../../widgets/recording_consent.dart';
 
 class PreJoinScreen extends ConsumerStatefulWidget {
@@ -45,6 +50,8 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
   List<MediaDevice> _videoInputs = [];
   MediaDevice? _selectedAudioInput;
   MediaDevice? _selectedVideoInput;
+  double _micGain = 1.0;
+  bool _noiseSuppression = true;
 
   @override
   void initState() {
@@ -60,10 +67,28 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
   }
 
   Future<void> _initLocalTracks() async {
+    if (!kIsWeb) {
+      try {
+        await [
+          Permission.microphone,
+          Permission.camera,
+          Permission.bluetoothConnect,
+        ].request();
+      } catch (e) {
+        debugPrint('Permission request failed: $e');
+      }
+    }
+
     // Attempt each capture device independently so one denial doesn't hide the
     // other, and we can tell the user exactly which permission to grant.
     try {
-      _audioTrack = await LocalAudioTrack.create();
+      _audioTrack = await LocalAudioTrack.create(
+        AudioCaptureOptions(
+          noiseSuppression: _noiseSuppression,
+          echoCancellation: true,
+          autoGainControl: true,
+        ),
+      );
       _micDenied = false;
     } catch (e) {
       _micDenied = true;
@@ -108,7 +133,12 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
     try {
       await _audioTrack?.dispose();
       _audioTrack = await LocalAudioTrack.create(
-        _selectedAudioInput != null ? AudioCaptureOptions(deviceId: _selectedAudioInput!.deviceId) : const AudioCaptureOptions(),
+        AudioCaptureOptions(
+          deviceId: _selectedAudioInput?.deviceId,
+          noiseSuppression: _noiseSuppression,
+          echoCancellation: true,
+          autoGainControl: true,
+        ),
       );
       _micDenied = false;
     } catch (e) {
@@ -133,7 +163,12 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
     setState(() => _selectedAudioInput = device);
     await _audioTrack?.dispose();
     _audioTrack = await LocalAudioTrack.create(
-      AudioCaptureOptions(deviceId: device.deviceId),
+      AudioCaptureOptions(
+        deviceId: device.deviceId,
+        noiseSuppression: _noiseSuppression,
+        echoCancellation: true,
+        autoGainControl: true,
+      ),
     );
     if (mounted) setState(() {});
   }
@@ -160,6 +195,7 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
   }
 
   bool get _canJoin => _nameController.text.trim().isNotEmpty;
+  bool get _isTestMode => widget.meetingId == 'test-room' || widget.title.toLowerCase().contains('device test');
 
   @override
   Widget build(BuildContext context) {
@@ -171,7 +207,7 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
         backgroundColor: context.colors.background,
         elevation: 0,
         title: Text(
-          'Ready to join?',
+          _isTestMode ? 'Test Devices' : 'Ready to join?',
           style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: context.colors.textMain),
         ),
       ),
@@ -184,14 +220,18 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  widget.title,
+                  _isTestMode ? 'Camera & Microphone Preview' : widget.title,
                   style: GoogleFonts.plusJakartaSans(fontSize: 22, fontWeight: FontWeight.w700, color: context.colors.textMain),
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 16),
 
-                // Preview — deliberately secondary to the Join action below.
+                // Preview — camera and mic controls.
                 _buildPreview(context),
+                const SizedBox(height: 12),
+
+                // Sound Check bar — real-time mic level meter & speaker test button.
+                _buildSoundCheckBar(context),
                 const SizedBox(height: 16),
 
                 if (showPermissionBanner) ...[
@@ -199,15 +239,16 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
                   const SizedBox(height: 16),
                 ],
 
-                _buildNameSection(context),
-                const SizedBox(height: 16),
-
-                const RecordingConsentNotice(),
-                const SizedBox(height: 20),
+                if (!_isTestMode) ...[
+                  _buildNameSection(context),
+                  const SizedBox(height: 16),
+                  const RecordingConsentNotice(),
+                  const SizedBox(height: 20),
+                ],
 
                 // Primary action — the visual focus of the screen.
                 ElevatedButton(
-                  onPressed: _canJoin ? _joinMeeting : null,
+                  onPressed: _isTestMode ? () => Navigator.of(context).pop() : (_canJoin ? _joinMeeting : null),
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 18),
                     backgroundColor: context.colors.primary,
@@ -217,7 +258,7 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.full)),
                   ),
                   child: Text(
-                    _canJoin ? 'Join now' : 'Enter your name to join',
+                    _isTestMode ? 'Done Testing' : (_canJoin ? 'Join now' : 'Enter your name to join'),
                     style: GoogleFonts.plusJakartaSans(fontSize: 18, fontWeight: FontWeight.w800),
                   ),
                 ),
@@ -471,8 +512,74 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
         children: [
           if (_videoInputs.isNotEmpty)
             _deviceDropdown(context, Icons.videocam, _selectedVideoInput, _videoInputs, _changeVideoDevice, 'Camera'),
-          if (_audioInputs.isNotEmpty)
+          if (_audioInputs.isNotEmpty) ...[
             _deviceDropdown(context, Icons.mic, _selectedAudioInput, _audioInputs, _changeAudioDevice, 'Microphone'),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Icon(Icons.volume_up_rounded, size: 20, color: context.colors.textMuted),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Mic Input Volume',
+                            style: GoogleFonts.plusJakartaSans(fontSize: 13, fontWeight: FontWeight.w600, color: context.colors.textMain),
+                          ),
+                          Text(
+                            '${(_micGain * 100).toInt()}%',
+                            style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: context.colors.primary),
+                          ),
+                        ],
+                      ),
+                      SliderTheme(
+                        data: SliderThemeData(
+                          trackHeight: 4,
+                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
+                          activeTrackColor: context.colors.primary,
+                          inactiveTrackColor: context.colors.border,
+                          thumbColor: context.colors.primary,
+                        ),
+                        child: Slider(
+                          value: _micGain,
+                          min: 0.0,
+                          max: 2.0,
+                          divisions: 20,
+                          onChanged: (val) {
+                            setState(() => _micGain = val);
+                            if (kIsWeb) setMicGain(val);
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SwitchListTile.adaptive(
+              value: _noiseSuppression,
+              contentPadding: EdgeInsets.zero,
+              activeTrackColor: context.colors.primary,
+              title: Text(
+                'Background Noise Suppression',
+                style: GoogleFonts.plusJakartaSans(fontSize: 13, fontWeight: FontWeight.w600, color: context.colors.textMain),
+              ),
+              subtitle: Text(
+                'Filters out fans, room noise & typing',
+                style: GoogleFonts.plusJakartaSans(fontSize: 11, color: context.colors.textMuted),
+              ),
+              secondary: Icon(Icons.cleaning_services_rounded, size: 20, color: context.colors.textMuted),
+              onChanged: (val) async {
+                setState(() => _noiseSuppression = val);
+                await _retryMic();
+              },
+            ),
+          ],
         ],
       ),
     );
@@ -512,6 +619,247 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildSoundCheckBar(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.sm),
+        boxShadow: AppShadows.card,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: _SoundLevelMeter(
+              audioTrack: _audioTrack,
+              isMicMuted: _isMicMuted,
+              isMicDenied: _micDenied,
+            ),
+          ),
+          const SizedBox(width: 12),
+          const _SpeakerTestButton(),
+        ],
+      ),
+    );
+  }
+}
+
+class _SoundLevelMeter extends StatefulWidget {
+  final LocalAudioTrack? audioTrack;
+  final bool isMicMuted;
+  final bool isMicDenied;
+
+  const _SoundLevelMeter({
+    required this.audioTrack,
+    required this.isMicMuted,
+    required this.isMicDenied,
+  });
+
+  @override
+  State<_SoundLevelMeter> createState() => _SoundLevelMeterState();
+}
+
+class _SoundLevelMeterState extends State<_SoundLevelMeter> {
+  Timer? _levelTimer;
+  double _level = 0.0;
+
+  @override
+  void initState() {
+    super.initState();
+    _updateMeterState();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SoundLevelMeter oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isMicMuted != widget.isMicMuted ||
+        oldWidget.isMicDenied != widget.isMicDenied ||
+        oldWidget.audioTrack != widget.audioTrack) {
+      _updateMeterState();
+    }
+  }
+
+  void _updateMeterState() {
+    _levelTimer?.cancel();
+    _levelTimer = null;
+
+    if (widget.isMicMuted || widget.isMicDenied || widget.audioTrack == null) {
+      if (kIsWeb) {
+        stopMicLevelMeter();
+      }
+      if (_level != 0.0 && mounted) {
+        setState(() => _level = 0.0);
+      }
+      return;
+    }
+
+    if (kIsWeb) {
+      startMicLevelMeter();
+    }
+
+    // Measure real physical audio frequency levels from hardware
+    _levelTimer = Timer.periodic(const Duration(milliseconds: 70), (_) {
+      if (!mounted) return;
+      if (widget.isMicMuted || widget.isMicDenied || widget.audioTrack == null) {
+        _levelTimer?.cancel();
+        _levelTimer = null;
+        if (kIsWeb) {
+          stopMicLevelMeter();
+        }
+        if (_level != 0.0) setState(() => _level = 0.0);
+        return;
+      }
+
+      double sampledLevel = 0.0;
+      if (kIsWeb) {
+        sampledLevel = getRealMicLevel();
+      }
+
+      if ((_level - sampledLevel).abs() > 0.01) {
+        setState(() => _level = sampledLevel);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _levelTimer?.cancel();
+    if (kIsWeb) {
+      stopMicLevelMeter();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.isMicDenied) {
+      return Text(
+        'Mic permission required',
+        style: GoogleFonts.plusJakartaSans(fontSize: 12, color: context.colors.error, fontWeight: FontWeight.w600),
+      );
+    }
+
+    if (widget.isMicMuted) {
+      return Row(
+        children: [
+          Icon(Icons.mic_off_rounded, size: 14, color: context.colors.textMuted),
+          const SizedBox(width: 6),
+          Text(
+            'Microphone Muted',
+            style: GoogleFonts.plusJakartaSans(fontSize: 12, color: context.colors.textMuted, fontWeight: FontWeight.w500),
+          ),
+        ],
+      );
+    }
+
+    return Row(
+      children: [
+        Icon(Icons.mic_rounded, size: 15, color: context.colors.primary),
+        const SizedBox(width: 6),
+        Text(
+          'Mic:',
+          style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: context.colors.textMain),
+        ),
+        const SizedBox(width: 8),
+        Row(
+          children: List.generate(7, (i) {
+            final threshold = (i + 1) / 7.0;
+            final isActive = _level >= threshold;
+            Color barColor;
+            if (i < 4) {
+              barColor = const Color(0xFF10B981);
+            } else if (i < 6) {
+              barColor = Colors.amber;
+            } else {
+              barColor = Colors.redAccent;
+            }
+
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 70),
+              margin: const EdgeInsets.symmetric(horizontal: 1.5),
+              width: 4,
+              height: 14,
+              decoration: BoxDecoration(
+                color: isActive ? barColor : barColor.withValues(alpha: 0.18),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            );
+          }),
+        ),
+        const SizedBox(width: 6),
+        Flexible(
+          child: Text(
+            _level > 0.05 ? 'Testing' : 'Speak to test',
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 11,
+              color: _level > 0.05 ? context.colors.primary : context.colors.textLight,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SpeakerTestButton extends StatefulWidget {
+  const _SpeakerTestButton();
+
+  @override
+  State<_SpeakerTestButton> createState() => _SpeakerTestButtonState();
+}
+
+class _SpeakerTestButtonState extends State<_SpeakerTestButton> {
+  bool _isPlaying = false;
+
+  Future<void> _playTestChime() async {
+    setState(() => _isPlaying = true);
+    if (kIsWeb) {
+      playTestChime();
+    } else {
+      SystemSound.play(SystemSoundType.click);
+    }
+    await Future.delayed(const Duration(milliseconds: 1200));
+    if (mounted) setState(() => _isPlaying = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: _isPlaying ? null : _playTestChime,
+      borderRadius: BorderRadius.circular(AppRadius.sm),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        decoration: BoxDecoration(
+          color: context.colors.primary.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(AppRadius.sm),
+          border: Border.all(color: context.colors.primary.withValues(alpha: 0.2)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              _isPlaying ? Icons.volume_up_rounded : Icons.volume_up_outlined,
+              size: 15,
+              color: context.colors.primary,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              _isPlaying ? 'Playing Sound 🎵' : 'Test Speaker',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: context.colors.primary,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

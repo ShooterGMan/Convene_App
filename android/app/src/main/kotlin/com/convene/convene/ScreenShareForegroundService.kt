@@ -15,6 +15,8 @@ import android.os.IBinder
  * throws and screen share silently fails. flutter_webrtc (used by
  * livekit_client) does not start one itself, so the app has to.
  */
+import android.content.pm.ServiceInfo
+
 class ScreenShareForegroundService : Service() {
     companion object {
         private const val CHANNEL_ID = "screen_share_channel"
@@ -24,31 +26,59 @@ class ScreenShareForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(NOTIFICATION_ID, buildNotification())
-        return START_NOT_STICKY
+        val title = intent?.getStringExtra("title") ?: "Convene"
+        val text = intent?.getStringExtra("text") ?: "Meeting active in background"
+        
+        try {
+            val notification = buildNotification(title, text)
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return START_STICKY
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(title: String, text: String): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Screen sharing",
+                "Active Meeting Service",
                 NotificationManager.IMPORTANCE_LOW
             )
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            manager?.createNotificationChannel(channel)
         }
 
-        return Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Convene")
-            .setContentText("Your screen is being shared in the meeting")
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(this, CHANNEL_ID)
+        } else {
+            @Suppress("DEPRECATION")
+            Notification.Builder(this)
+        }
+
+        return builder
+            .setContentTitle(title)
+            .setContentText(text)
             .setSmallIcon(R.mipmap.launcher_icon)
             .setOngoing(true)
             .build()
     }
 
     override fun onDestroy() {
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         super.onDestroy()
     }
 }

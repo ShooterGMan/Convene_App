@@ -41,6 +41,12 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
   }
 
   @override
+  void initState() {
+    super.initState();
+    _syncWithCalendar = ref.read(calendarAutoSyncProvider);
+  }
+
+  @override
   void dispose() {
     _titleController.dispose();
     _guestEmailsController.dispose();
@@ -134,19 +140,16 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
       await ref.read(firestoreRepositoryProvider).createMeeting(meeting).timeout(const Duration(seconds: 10));
 
       bool calendarSynced = false;
-      String? calendarError;
       if (_syncWithCalendar && _selectedType == MeetingType.meet) {
         try {
-          await ref.read(calendarServiceProvider).createEvent(
+          calendarSynced = await ref.read(calendarServiceProvider).createEvent(
                 title: _titleController.text.trim(),
                 startTime: startTime,
                 endTime: endTime,
                 guestEmails: guestEmails,
                 conveneUrl: conveneUrl,
               ).timeout(const Duration(seconds: 15));
-          calendarSynced = true;
         } catch (e) {
-          calendarError = e.toString();
           debugPrint('Calendar sync failed (non-fatal): $e');
         }
       }
@@ -156,10 +159,9 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
         final msg = !_syncWithCalendar || _selectedType != MeetingType.meet
             ? 'Meeting scheduled!'
             : calendarSynced
-                ? 'Meeting scheduled & added to Google Calendar!'
-                : 'Meeting scheduled. (Couldn\'t add to Google Calendar - reconnect Google to enable this.)';
+                ? 'Meeting scheduled & synced to Google Calendar! 📅'
+                : 'Meeting scheduled! Opened Google Calendar template to save.';
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-        if (calendarError != null) debugPrint(calendarError);
       }
     } catch (e) {
       if (mounted) {

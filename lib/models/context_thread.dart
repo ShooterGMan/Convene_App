@@ -141,16 +141,17 @@ class ContextThread {
     this.talkTimeMetrics,
   });
 
-  factory ContextThread.fromJson(Map<String, dynamic> json) {
+  factory ContextThread.fromJson(Map<String, dynamic> json, {String? docId}) {
+    final effectiveId = docId ?? (json['id'] as String?) ?? (json['meetingId'] as String?) ?? '';
     return ContextThread(
-      id: json['id'] as String,
-      meetingTitle: json['meetingTitle'] as String,
+      id: effectiveId,
+      meetingTitle: json['meetingTitle'] as String? ?? 'Untitled Topic',
       meetingId: json['meetingId'] as String?,
       groupId: json['groupId'] as String?,
       recordingUrl: json['recordingUrl'] as String?,
       createdAt: json['createdAt'] is Timestamp 
           ? (json['createdAt'] as Timestamp).toDate() 
-          : DateTime.parse(json['createdAt'] as String),
+          : (json['createdAt'] is String ? (DateTime.tryParse(json['createdAt'] as String) ?? DateTime.now()) : DateTime.now()),
       participants: (json['participants'] as List<dynamic>?)
               ?.map((e) => AppUser.fromJson(e as Map<String, dynamic>))
               .toList() ??

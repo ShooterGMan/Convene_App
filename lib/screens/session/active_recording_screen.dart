@@ -6,12 +6,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:go_router/go_router.dart';
 import 'package:livekit_client/livekit_client.dart';
 
+import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../models/user.dart';
 import '../../providers/auth_provider.dart';
 import '../../repositories/firestore_repository.dart';
+import '../../services/background_meeting_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/recording_consent.dart';
 import '../../widgets/waveform_visualizer.dart';
@@ -65,6 +69,11 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
   }
 
   void _onConsent() {
+    try {
+      WakelockPlus.enable();
+    } catch (e) {
+      debugPrint('Wakelock enable error: $e');
+    }
     setState(() => _consented = true);
     _connect();
   }
@@ -72,6 +81,17 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
   Future<void> _connect() async {
     debugPrint('[REC] requesting LiveKit token...');
     try {
+      if (!kIsWeb) {
+        try {
+          await [
+            Permission.microphone,
+            Permission.bluetoothConnect,
+          ].request();
+        } catch (e) {
+          debugPrint('[REC] Permission request error: $e');
+        }
+      }
+
       final result = await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('getLivekitToken').call({
         'meetingId': widget.meetingId,
         'groupId': widget.groupId,
@@ -95,7 +115,11 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
       await _room.connect(livekitUrl, token);
       debugPrint('[REC] connect() returned. room.connectionState=${_room.connectionState}');
 
-      await _room.localParticipant?.setMicrophoneEnabled(true);
+      try {
+        await _room.localParticipant?.setMicrophoneEnabled(true);
+      } catch (e) {
+        debugPrint('[REC] setMicrophoneEnabled error: $e');
+      }
       debugPrint('[REC] setMicrophoneEnabled(true) returned.');
 
       final localTracks = _room.localParticipant?.trackPublications.values.toList() ?? [];
@@ -109,6 +133,10 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
         return;
       }
       setState(() => _isConnecting = false);
+      BackgroundMeetingService.start(
+        title: 'Recording Session Active',
+        text: '${widget.meetingTitle} is recording in the background',
+      );
       _timer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (!_isEnding && mounted) {
           setState(() => _elapsedSeconds++);
@@ -127,7 +155,13 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
 
   @override
   void dispose() {
+    try {
+      WakelockPlus.disable();
+    } catch (e) {
+      debugPrint('Wakelock disable error: $e');
+    }
     debugPrint('[REC] dispose() called - room.connectionState=${_room.connectionState}');
+    BackgroundMeetingService.stop();
     _timer?.cancel();
     _meetingSub?.cancel();
     _summaryTimeoutTimer?.cancel();

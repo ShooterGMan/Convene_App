@@ -90,6 +90,18 @@ export const livekitWebhook = functions.region("asia-south1").runWith({ secrets:
       return;
     }
 
+    if (event.event === "participant_left" || event.event === "room_finished") {
+      const roomName = event.room?.name;
+      const numParticipants = event.room?.numParticipants ?? 0;
+      if (roomName && (numParticipants === 0 || event.event === "room_finished")) {
+        console.log(`Room ${roomName} is empty or finished. Stopping egress immediately...`);
+        const active = await getEgressClient().listEgress({ roomName, active: true });
+        await Promise.all(active.map((e) => getEgressClient().stopEgress(e.egressId)));
+      }
+      res.status(200).send("Room cleanup handled");
+      return;
+    }
+
     if (event.event === "egress_ended") {
       await handleEgressEnded(event.egressInfo);
       res.status(200).send("Success");
@@ -391,6 +403,35 @@ export async function handleEgressEnded(egressInfo: any) {
 
     const usingSpeakerTracks = !speakerTracksSnapshot.empty && audioParts.length > 1;
 
+    // Check for registered Voice ID voiceprints for attendees
+    let loadedVoiceprintsCount = 0;
+    if (!usingSpeakerTracks && existingMeetingDoc.exists) {
+      const d = existingMeetingDoc.data();
+      const pList: any[] = d?.participants || [];
+      for (const p of pList) {
+        if (!p?.id || !p?.name) continue;
+        const voiceFile = bucket.file(`users/${p.id}/voiceprint.ogg`);
+        try {
+          const [exists] = await voiceFile.exists();
+          if (exists) {
+            const vpTmpPath = path.join(os.tmpdir(), `voiceprint-${p.id}-${Date.now()}.ogg`);
+            await voiceFile.download({ destination: vpTmpPath });
+            cleanupPaths.push(vpTmpPath);
+            const vpUpload = await ai.files.upload({
+              file: vpTmpPath,
+              config: { mimeType: "audio/ogg", displayName: `Voice ID reference for ${p.name}` },
+            });
+            audioParts.unshift(createPartFromUri(vpUpload.uri!, vpUpload.mimeType!));
+            audioParts.unshift(`Reference 5-second Voice ID sample for ${p.name}:`);
+            loadedVoiceprintsCount++;
+            console.log(`Attached reference Voice ID for ${p.name} (${p.id})`);
+          }
+        } catch (vpErr) {
+          console.error(`Failed to load voiceprint for ${p.name}:`, vpErr);
+        }
+      }
+    }
+
     // Attendee roster as a prior for speaker attribution on the single mixed
     // recording (in-person meetings especially). We can't positively identify
     // voices, but giving the model the list of people who were expected helps
@@ -425,9 +466,15 @@ export async function handleEgressEnded(egressInfo: any) {
     const prompt = `
       You are an expert meeting assistant. Analyze the audio of this meeting.
       If the recording is empty or silent, state that no meaningful content was captured.
+      
+      AUDIO NOISE & REVERB CANCELLATION:
+      The audio may contain non-speech background noise (fans, keyboard typing, HVAC hums, paper rustling, air conditioning, reverb, background babble). Ignore all non-speech background noise and isolate distinct human vocal frequencies for transcription, voice matching, and summary extraction.
+
       ${usingSpeakerTracks
         ? "You have been given separate labeled audio tracks, one per participant, each preceded by a text note naming who it belongs to. Use those exact names when attributing decisions, action items, and transcript lines to specific people."
-        : `This is a single mixed recording of everyone in the meeting. ${rosterHint}If you can distinguish different speakers by voice but cannot match them to a name, label them Speaker 1, Speaker 2, etc.`}
+        : loadedVoiceprintsCount > 0
+          ? `You have been provided ${loadedVoiceprintsCount} reference Voice ID audio sample(s) for registered attendees above. Compare the acoustic voice timber and pitch in the main meeting audio against these reference voice samples to attribute quotes, decisions, and action items to real names. If a voice does not match any registered reference voice sample or roster name, label them "Guest" (or "Guest 1", "Guest 2", etc.).`
+          : `This is a single mixed recording of everyone in the meeting. ${rosterHint}If a speaker's voice matches an expected attendee, use their real name. If a speaker is an unregistered guest or cannot be identified, label them "Guest" (or "Guest 1", "Guest 2", etc.).`}
       Extract:
       1. A brief summary of the meeting (a single "summary" block).
       2. The main decisions made — ONE "decision" block per distinct decision.
@@ -528,12 +575,11 @@ export async function handleEgressEnded(egressInfo: any) {
 
     if (!threadId) {
       const threadRef = db.collection("threads").doc();
-      const recordingUrl = `https://storage.googleapis.com/${egressBucket()}/${objectKey}`;
       await threadRef.set({
         id: threadRef.id,
         meetingTitle,
         groupId,
-        recordingUrl,
+        meetingId,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         participants,
         participantIds,

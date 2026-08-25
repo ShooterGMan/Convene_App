@@ -101,9 +101,26 @@ class _NotificationPanel extends ConsumerWidget {
                   'Notifications',
                   style: GoogleFonts.plusJakartaSans(fontSize: 18, fontWeight: FontWeight.w700, color: context.colors.textMain),
                 ),
-                IconButton(
-                  icon: Icon(Icons.close, color: context.colors.textMuted),
-                  onPressed: () => Navigator.of(context).pop(),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(Icons.done_all_rounded, size: 20, color: context.colors.primary),
+                      tooltip: 'Mark all as read',
+                      onPressed: () {
+                        if (uid != null) {
+                          final notifications = notificationsAsync.value ?? [];
+                          final repo = ref.read(firestoreRepositoryProvider);
+                          for (final n in notifications) {
+                            if (!n.isRead) repo.markNotificationRead(uid, n.id);
+                          }
+                        }
+                      },
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close, color: context.colors.textMuted),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -126,7 +143,7 @@ class _NotificationPanel extends ConsumerWidget {
                   shrinkWrap: true,
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                   itemCount: notifications.length,
-                  separatorBuilder: (_, __) => const Divider(height: 1),
+                  separatorBuilder: (_, _) => const Divider(height: 1),
                   itemBuilder: (context, index) {
                     final n = notifications[index];
                     return ListTile(
