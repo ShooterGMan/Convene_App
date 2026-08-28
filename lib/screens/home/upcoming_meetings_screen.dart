@@ -149,6 +149,22 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
             ),
           ).animate().fadeIn(duration: 400.ms).slideX(begin: -0.03, end: 0, duration: 400.ms, curve: Curves.easeOut),
         ),
+        GestureDetector(
+          onTap: () => context.push('/search'),
+          child: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: context.colors.surface,
+              shape: BoxShape.circle,
+              boxShadow: AppShadows.card,
+            ),
+            child: Center(
+              child: Icon(Icons.search_rounded, size: 22, color: context.colors.textMain),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
         const NotificationBell(),
       ],
     );
@@ -404,6 +420,17 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
     return _sectionShell(
       context,
       title: 'Needs your attention',
+      action: GestureDetector(
+        onTap: () => context.push('/tasks'),
+        child: Text(
+          'All Tasks',
+          style: GoogleFonts.plusJakartaSans(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: context.colors.primary,
+          ),
+        ),
+      ),
       child: Column(
         children: [
           for (final invite in invites)

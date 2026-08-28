@@ -22,6 +22,8 @@ class Meeting {
   final bool isImportant;
   final bool isInstant;
   final Map<String, String> rsvps; // uid -> 'yes' | 'no' | 'maybe'
+  final List<String> agenda; // Pre-meeting discussion topics
+  final List<String> carriedOverTasks; // Unfinished action items from past meetings
 
   const Meeting({
     required this.id,
@@ -40,6 +42,8 @@ class Meeting {
     this.isImportant = false,
     this.isInstant = false,
     this.rsvps = const {},
+    this.agenda = const [],
+    this.carriedOverTasks = const [],
   });
 
   factory Meeting.fromJson(Map<String, dynamic> json) {
@@ -76,6 +80,8 @@ class Meeting {
       isImportant: json['isImportant'] as bool? ?? false,
       isInstant: json['isInstant'] as bool? ?? false,
       rsvps: (json['rsvps'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
+      agenda: (json['agenda'] as List<dynamic>?)?.map((e) => e as String).toList() ?? [],
+      carriedOverTasks: (json['carriedOverTasks'] as List<dynamic>?)?.map((e) => e as String).toList() ?? [],
     );
   }
 
@@ -99,7 +105,51 @@ class Meeting {
       'isImportant': isImportant,
       'isInstant': isInstant,
       'rsvps': rsvps,
+      'agenda': agenda,
+      'carriedOverTasks': carriedOverTasks,
     };
+  }
+
+  Meeting copyWith({
+    String? id,
+    String? title,
+    DateTime? startTime,
+    DateTime? endTime,
+    MeetingType? type,
+    List<AppUser>? participants,
+    String? location,
+    String? groupId,
+    String? topicId,
+    String? threadId,
+    String? summaryStatus,
+    String? summaryError,
+    List<String>? guestEmails,
+    bool? isImportant,
+    bool? isInstant,
+    Map<String, String>? rsvps,
+    List<String>? agenda,
+    List<String>? carriedOverTasks,
+  }) {
+    return Meeting(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      startTime: startTime ?? this.startTime,
+      endTime: endTime ?? this.endTime,
+      type: type ?? this.type,
+      participants: participants ?? this.participants,
+      location: location ?? this.location,
+      groupId: groupId ?? this.groupId,
+      topicId: topicId ?? this.topicId,
+      threadId: threadId ?? this.threadId,
+      summaryStatus: summaryStatus ?? this.summaryStatus,
+      summaryError: summaryError ?? this.summaryError,
+      guestEmails: guestEmails ?? this.guestEmails,
+      isImportant: isImportant ?? this.isImportant,
+      isInstant: isInstant ?? this.isInstant,
+      rsvps: rsvps ?? this.rsvps,
+      agenda: agenda ?? this.agenda,
+      carriedOverTasks: carriedOverTasks ?? this.carriedOverTasks,
+    );
   }
 
   /// Returns human-readable meeting type label

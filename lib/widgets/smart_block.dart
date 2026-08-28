@@ -8,9 +8,12 @@ import '../theme/app_theme.dart';
 class SmartBlockWidget extends StatelessWidget {
   final SmartBlock block;
   final VoidCallback? onToggleComplete;
-  final VoidCallback? onReact;
+  final ValueChanged<String>? onReact;
   final VoidCallback? onEdit;
   final VoidCallback? onAssign;
+  final VoidCallback? onDelete;
+  final ValueChanged<SmartBlockPriority>? onChangePriority;
+  final VoidCallback? onChangeDueDate;
 
   const SmartBlockWidget({
     super.key,
@@ -19,7 +22,12 @@ class SmartBlockWidget extends StatelessWidget {
     this.onReact,
     this.onEdit,
     this.onAssign,
+    this.onDelete,
+    this.onChangePriority,
+    this.onChangeDueDate,
   });
+
+  static const List<String> availableEmojis = ['👍', '❤️', '💡', '🔥', '🙌', '🎯'];
 
   @override
   Widget build(BuildContext context) {
@@ -47,7 +55,7 @@ class SmartBlockWidget extends StatelessWidget {
             Row(
               children: [
                 _buildLeadingIcon(context),
-                SizedBox(width: 10),
+                const SizedBox(width: 10),
                 Text(
                   _typeLabel.toUpperCase(),
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
@@ -57,16 +65,16 @@ class SmartBlockWidget extends StatelessWidget {
                       ),
                 ),
                 if (block.type == SmartBlockType.actionItem) ...[
-                  SizedBox(width: 8),
-                  _buildPriorityBadge(context),
+                  const SizedBox(width: 8),
+                  _buildInteractivePriorityBadge(context),
                   const Spacer(),
                   GestureDetector(
                     onTap: onAssign,
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
-                        color: block.assignee != null 
-                            ? context.colors.primaryLight 
+                        color: block.assignee != null
+                            ? context.colors.primaryLight
                             : context.colors.textMuted.withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(AppRadius.full),
                       ),
@@ -78,7 +86,7 @@ class SmartBlockWidget extends StatelessWidget {
                             size: 13,
                             color: block.assignee != null ? context.colors.primary : context.colors.textMuted,
                           ),
-                          SizedBox(width: 4),
+                          const SizedBox(width: 4),
                           Text(
                             block.assignee != null ? '@${block.assignee}' : 'Assign',
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -101,9 +109,29 @@ class SmartBlockWidget extends StatelessWidget {
                       child: Icon(Icons.edit_outlined, size: 16, color: context.colors.textLight),
                     ),
                   ),
+                if (onDelete != null)
+                  PopupMenuButton<String>(
+                    icon: Icon(Icons.more_vert_rounded, size: 16, color: context.colors.textLight),
+                    padding: EdgeInsets.zero,
+                    onSelected: (val) {
+                      if (val == 'delete') onDelete?.call();
+                    },
+                    itemBuilder: (ctx) => [
+                      const PopupMenuItem(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            Icon(Icons.delete_outline_rounded, size: 16, color: Colors.redAccent),
+                            SizedBox(width: 8),
+                            Text('Delete Block', style: TextStyle(color: Colors.redAccent, fontSize: 13)),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
               ],
             ),
-            SizedBox(height: 12),
+            const SizedBox(height: 12),
             // Content text
             Text(
               block.content,
@@ -119,29 +147,35 @@ class SmartBlockWidget extends StatelessWidget {
                         : null,
                   ),
             ),
-            if (block.type == SmartBlockType.actionItem && block.dueDate != null) ...[
-              SizedBox(height: 8),
-              Row(
-                children: [
-                  Icon(Icons.calendar_today_rounded, size: 12, color: context.colors.textMuted),
-                  SizedBox(width: 4),
-                  Text(
-                    'Due ${DateFormat('MMM d').format(block.dueDate!)}',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: context.colors.textMuted,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                  ),
-                ],
+            if (block.type == SmartBlockType.actionItem) ...[
+              const SizedBox(height: 8),
+              GestureDetector(
+                onTap: onChangeDueDate,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.calendar_today_rounded, size: 12, color: context.colors.textMuted),
+                    const SizedBox(width: 4),
+                    Text(
+                      block.dueDate != null
+                          ? 'Due ${DateFormat('MMM d').format(block.dueDate!)}'
+                          : 'Set due date',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: block.dueDate != null ? context.colors.textMuted : context.colors.primary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                    ),
+                  ],
+                ),
               ),
             ],
             if (block.editedBy != null) ...[
-              SizedBox(height: 10),
+              const SizedBox(height: 10),
               Row(
                 children: [
                   Icon(Icons.history_edu_outlined, size: 13, color: context.colors.textLight),
-                  SizedBox(width: 5),
+                  const SizedBox(width: 5),
                   Text(
                     block.editedAt != null
                         ? 'Edited by ${block.editedBy} · ${DateFormat('MMM d').format(block.editedAt!)}'
@@ -155,6 +189,9 @@ class SmartBlockWidget extends StatelessWidget {
                 ],
               ),
             ],
+            // Reactions bar
+            const SizedBox(height: 12),
+            _buildReactionsBar(context),
           ],
         ),
       ),
@@ -162,6 +199,91 @@ class SmartBlockWidget extends StatelessWidget {
         .animate()
         .fadeIn(duration: 400.ms, curve: Curves.easeOut)
         .slideY(begin: 0.05, end: 0, duration: 400.ms, curve: Curves.easeOut);
+  }
+
+  Widget _buildReactionsBar(BuildContext context) {
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        ...block.reactions.map((r) {
+          return GestureDetector(
+            onTap: () => onReact?.call(r.emoji),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: r.isReactedByMe
+                    ? context.colors.primaryLight
+                    : context.colors.surface,
+                borderRadius: BorderRadius.circular(AppRadius.full),
+                border: Border.all(
+                  color: r.isReactedByMe
+                      ? context.colors.primary.withValues(alpha: 0.5)
+                      : context.colors.border.withValues(alpha: 0.5),
+                  width: 1,
+                ),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(r.emoji, style: const TextStyle(fontSize: 12)),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${r.count}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: r.isReactedByMe ? context.colors.primary : context.colors.textMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }),
+        PopupMenuButton<String>(
+          tooltip: 'Add reaction',
+          padding: EdgeInsets.zero,
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+            decoration: BoxDecoration(
+              color: context.colors.textMuted.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(AppRadius.full),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.add_reaction_outlined, size: 13, color: context.colors.textMuted),
+              ],
+            ),
+          ),
+          onSelected: (emoji) => onReact?.call(emoji),
+          itemBuilder: (ctx) => [
+            PopupMenuItem(
+              enabled: false,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: availableEmojis.map((emoji) {
+                  return GestureDetector(
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      onReact?.call(emoji);
+                    },
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Text(emoji, style: const TextStyle(fontSize: 22)),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
   }
 
   Widget _buildLeadingIcon(BuildContext context) {
@@ -210,7 +332,7 @@ class SmartBlockWidget extends StatelessWidget {
               ),
             ),
             child: block.isCompleted
-                ? Icon(
+                ? const Icon(
                     Icons.check_rounded,
                     size: 16,
                     color: Colors.white,
@@ -235,7 +357,7 @@ class SmartBlockWidget extends StatelessWidget {
     }
   }
 
-  Widget _buildPriorityBadge(BuildContext context) {
+  Widget _buildInteractivePriorityBadge(BuildContext context) {
     Color badgeColor;
     String label;
     switch (block.priority) {
@@ -253,7 +375,7 @@ class SmartBlockWidget extends StatelessWidget {
         break;
     }
 
-    return Container(
+    final badgeWidget = Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
         color: badgeColor.withValues(alpha: 0.15),
@@ -269,6 +391,48 @@ class SmartBlockWidget extends StatelessWidget {
           letterSpacing: 0.5,
         ),
       ),
+    );
+
+    if (onChangePriority == null) return badgeWidget;
+
+    return PopupMenuButton<SmartBlockPriority>(
+      tooltip: 'Change priority',
+      padding: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      onSelected: onChangePriority,
+      itemBuilder: (ctx) => [
+        const PopupMenuItem(
+          value: SmartBlockPriority.high,
+          child: Row(
+            children: [
+              Icon(Icons.circle, color: Colors.redAccent, size: 10),
+              SizedBox(width: 8),
+              Text('High Priority', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            ],
+          ),
+        ),
+        const PopupMenuItem(
+          value: SmartBlockPriority.medium,
+          child: Row(
+            children: [
+              Icon(Icons.circle, color: Colors.amber, size: 10),
+              SizedBox(width: 8),
+              Text('Medium Priority', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            ],
+          ),
+        ),
+        const PopupMenuItem(
+          value: SmartBlockPriority.low,
+          child: Row(
+            children: [
+              Icon(Icons.circle, color: Colors.blueAccent, size: 10),
+              SizedBox(width: 8),
+              Text('Low Priority', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            ],
+          ),
+        ),
+      ],
+      child: badgeWidget,
     );
   }
 

@@ -14,7 +14,9 @@ import '../../providers/auth_provider.dart';
 import '../../providers/data_providers.dart';
 import '../../repositories/firestore_repository.dart';
 import '../../models/context_thread.dart';
+import '../../models/group.dart';
 import '../../models/user.dart';
+import '../../services/export_service.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/smart_block.dart';
 
@@ -37,6 +39,36 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
   String? _error;
   final TextEditingController _commentController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+
+  // Category filter state
+  String _selectedCategory = 'All';
+
+  List<SmartBlock> get _filteredBlocks {
+    final myName = ref.read(appUserProvider).name.toLowerCase();
+    final myId = ref.read(currentUserProvider)?.uid;
+    switch (_selectedCategory) {
+      case 'My Tasks':
+        return _blocks.where((b) {
+          if (b.type != SmartBlockType.actionItem) return false;
+          if (b.assignedUserId != null && b.assignedUserId == myId) return true;
+          if (b.assignee != null) {
+            final a = b.assignee!.toLowerCase();
+            if (a == 'you' || myName.contains(a) || a.contains(myName.split(' ').first)) return true;
+          }
+          return false;
+        }).toList();
+      case 'Action Items':
+        return _blocks.where((b) => b.type == SmartBlockType.actionItem).toList();
+      case 'Decisions':
+        return _blocks.where((b) => b.type == SmartBlockType.decision).toList();
+      case 'Summary':
+        return _blocks.where((b) => b.type == SmartBlockType.summary).toList();
+      case 'Insights':
+        return _blocks.where((b) => b.type == SmartBlockType.keyInsight).toList();
+      default:
+        return _blocks;
+    }
+  }
 
   // "What changed since you last viewed" tracking.
   DateTime? _lastViewed;
@@ -238,6 +270,369 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
         );
       }
     }
+  }
+
+  Future<void> _toggleBlockReaction(int index, String emoji) async {
+    final block = _blocks[index];
+    final currentReactions = List<Reaction>.from(block.reactions);
+    final existingIdx = currentReactions.indexWhere((r) => r.emoji == emoji);
+
+    if (existingIdx >= 0) {
+      final current = currentReactions[existingIdx];
+      if (current.isReactedByMe) {
+        if (current.count <= 1) {
+          currentReactions.removeAt(existingIdx);
+        } else {
+          currentReactions[existingIdx] = current.copyWith(count: current.count - 1, isReactedByMe: false);
+        }
+      } else {
+        currentReactions[existingIdx] = current.copyWith(count: current.count + 1, isReactedByMe: true);
+      }
+    } else {
+      currentReactions.add(Reaction(emoji: emoji, count: 1, isReactedByMe: true));
+    }
+
+    final previous = _blocks[index];
+    setState(() {
+      _blocks[index] = block.copyWith(reactions: currentReactions);
+    });
+
+    try {
+      await ref.read(firestoreRepositoryProvider).updateThreadBlocks(widget.threadId, _blocks);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _blocks[index] = previous);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update reaction: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _changePriority(int index, SmartBlockPriority priority) async {
+    final previous = _blocks[index];
+    setState(() {
+      _blocks[index] = previous.copyWith(priority: priority);
+    });
+    try {
+      await ref.read(firestoreRepositoryProvider).updateThreadBlocks(widget.threadId, _blocks);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _blocks[index] = previous);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update priority: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _pickDueDate(int index) async {
+    final block = _blocks[index];
+    final initial = block.dueDate ?? DateTime.now().add(const Duration(days: 2));
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: DateTime.now().subtract(const Duration(days: 30)),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (picked == null) return;
+
+    final previous = _blocks[index];
+    setState(() {
+      _blocks[index] = previous.copyWith(dueDate: picked);
+    });
+    try {
+      await ref.read(firestoreRepositoryProvider).updateThreadBlocks(widget.threadId, _blocks);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _blocks[index] = previous);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to update due date: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _deleteBlock(int index) async {
+    final removed = _blocks[index];
+    final previousList = List<SmartBlock>.from(_blocks);
+
+    setState(() {
+      _blocks.removeAt(index);
+    });
+
+    try {
+      await ref.read(firestoreRepositoryProvider).updateThreadBlocks(widget.threadId, _blocks);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Deleted ${removed.typeLabel.toLowerCase()}'),
+            action: SnackBarAction(
+              label: 'Undo',
+              onPressed: () async {
+                setState(() {
+                  _blocks = previousList;
+                });
+                await ref.read(firestoreRepositoryProvider).updateThreadBlocks(widget.threadId, _blocks);
+              },
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _blocks = previousList);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to delete block: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _showAddBlockModal() async {
+    SmartBlockType selectedType = SmartBlockType.actionItem;
+    SmartBlockPriority selectedPriority = SmartBlockPriority.medium;
+    DateTime? selectedDueDate;
+    String? selectedAssignee;
+    final contentCtrl = TextEditingController();
+    final participants = _thread?.participants ?? [];
+
+    await showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: context.colors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (context, setModalState) => SafeArea(
+          child: Padding(
+            padding: EdgeInsets.only(
+              left: 20,
+              right: 20,
+              top: 16,
+              bottom: MediaQuery.of(sheetCtx).viewInsets.bottom + 16,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: context.colors.textMuted.withValues(alpha: 0.3),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Add to Topic',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: context.colors.textMain,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  // Type selection chips
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      SmartBlockType.actionItem,
+                      SmartBlockType.decision,
+                      SmartBlockType.keyInsight,
+                      SmartBlockType.summary,
+                    ].map((t) {
+                      final isSelected = selectedType == t;
+                      String label;
+                      switch (t) {
+                        case SmartBlockType.actionItem:
+                          label = 'Action Item';
+                          break;
+                        case SmartBlockType.decision:
+                          label = 'Decision';
+                          break;
+                        case SmartBlockType.keyInsight:
+                          label = 'Key Insight';
+                          break;
+                        case SmartBlockType.summary:
+                          label = 'Summary';
+                          break;
+                      }
+                      return ChoiceChip(
+                        label: Text(label),
+                        selected: isSelected,
+                        onSelected: (_) => setModalState(() => selectedType = t),
+                        selectedColor: context.colors.primaryLight,
+                        labelStyle: TextStyle(
+                          color: isSelected ? context.colors.primary : context.colors.textMain,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 12,
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: contentCtrl,
+                    autofocus: true,
+                    maxLines: 3,
+                    style: TextStyle(color: context.colors.textMain),
+                    decoration: InputDecoration(
+                      hintText: selectedType == SmartBlockType.actionItem
+                          ? 'Describe task to be done...'
+                          : 'Enter notes or details...',
+                      filled: true,
+                      fillColor: context.colors.background,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(AppRadius.sm),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                  if (selectedType == SmartBlockType.actionItem) ...[
+                    const SizedBox(height: 14),
+                    Text(
+                      'Assignee',
+                      style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: context.colors.textMuted),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        ChoiceChip(
+                          label: const Text('Unassigned'),
+                          selected: selectedAssignee == null,
+                          onSelected: (_) => setModalState(() => selectedAssignee = null),
+                        ),
+                        ...participants.map((u) {
+                          final first = u.name.split(' ').first;
+                          final isSel = selectedAssignee == first;
+                          return ChoiceChip(
+                            label: Text('@$first'),
+                            selected: isSel,
+                            selectedColor: context.colors.primaryLight,
+                            onSelected: (_) => setModalState(() => selectedAssignee = first),
+                            labelStyle: TextStyle(
+                              color: isSel ? context.colors.primary : context.colors.textMain,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Priority', style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: context.colors.textMuted)),
+                              const SizedBox(height: 6),
+                              DropdownButtonFormField<SmartBlockPriority>(
+                                initialValue: selectedPriority,
+                                decoration: InputDecoration(
+                                  filled: true,
+                                  fillColor: context.colors.background,
+                                  isDense: true,
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.sm), borderSide: BorderSide.none),
+                                ),
+                                dropdownColor: context.colors.surface,
+                                items: const [
+                                  DropdownMenuItem(value: SmartBlockPriority.high, child: Text('High')),
+                                  DropdownMenuItem(value: SmartBlockPriority.medium, child: Text('Medium')),
+                                  DropdownMenuItem(value: SmartBlockPriority.low, child: Text('Low')),
+                                ],
+                                onChanged: (p) {
+                                  if (p != null) setModalState(() => selectedPriority = p);
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text('Due Date', style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w700, color: context.colors.textMuted)),
+                              const SizedBox(height: 6),
+                              OutlinedButton.icon(
+                                onPressed: () async {
+                                  final d = await showDatePicker(
+                                    context: context,
+                                    initialDate: selectedDueDate ?? DateTime.now().add(const Duration(days: 2)),
+                                    firstDate: DateTime.now().subtract(const Duration(days: 7)),
+                                    lastDate: DateTime.now().add(const Duration(days: 365)),
+                                  );
+                                  if (d != null) setModalState(() => selectedDueDate = d);
+                                },
+                                icon: const Icon(Icons.calendar_today_rounded, size: 14),
+                                label: Text(
+                                  selectedDueDate != null ? DateFormat('MMM d').format(selectedDueDate!) : 'Pick date',
+                                  style: const TextStyle(fontSize: 12),
+                                ),
+                                style: OutlinedButton.styleFrom(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                                  side: BorderSide(color: context.colors.border),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: () {
+                        final text = contentCtrl.text.trim();
+                        if (text.isEmpty) return;
+
+                        final newBlock = SmartBlock(
+                          id: 'block_${DateTime.now().millisecondsSinceEpoch}',
+                          type: selectedType,
+                          content: text,
+                          assignee: selectedAssignee,
+                          priority: selectedPriority,
+                          dueDate: selectedDueDate,
+                          editedBy: ref.read(appUserProvider).name,
+                          editedAt: DateTime.now(),
+                        );
+
+                        setState(() {
+                          _blocks.add(newBlock);
+                        });
+
+                        ref.read(firestoreRepositoryProvider).updateThreadBlocks(widget.threadId, _blocks);
+                        Navigator.pop(sheetCtx);
+                      },
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: context.colors.primary,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.full)),
+                      ),
+                      child: Text('Add ${selectedType.name}', style: const TextStyle(fontWeight: FontWeight.w700)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// Lightweight "correct the AI" workflow: edit a block's text and stamp it
@@ -639,14 +1034,33 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                 ),
               ),
               actions: [
+                IconButton(
+                  icon: const Icon(Icons.add_task_rounded, size: 22),
+                  tooltip: 'Add item',
+                  onPressed: _showAddBlockModal,
+                ),
                 if (_detectSpeakerLabels().isNotEmpty)
                   IconButton(
-                    icon: Icon(Icons.record_voice_over_outlined, size: 22),
+                    icon: const Icon(Icons.record_voice_over_outlined, size: 22),
                     tooltip: 'Fix speaker names',
                     onPressed: _showFixSpeakers,
                   ),
                 IconButton(
-                  icon: Icon(Icons.link_rounded, size: 22),
+                  icon: const Icon(Icons.ios_share_rounded, size: 21),
+                  tooltip: 'Export & Share',
+                  onPressed: () {
+                    final groups = ref.read(groupsProvider).value ?? [];
+                    Group? group;
+                    if (_thread?.groupId != null) {
+                      try {
+                        group = groups.firstWhere((g) => g.id == _thread!.groupId);
+                      } catch (_) {}
+                    }
+                    ExportService.showExportBottomSheet(context, _thread!, group: group);
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.link_rounded, size: 22),
                   tooltip: 'Copy Link',
                   onPressed: () => _copyThreadLink(context),
                 ),
@@ -714,7 +1128,7 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Icon(Icons.groups_rounded, size: 14, color: context.colors.primary),
-                                  SizedBox(width: 6),
+                                  const SizedBox(width: 6),
                                   Text(
                                     groupName,
                                     style: GoogleFonts.plusJakartaSans(
@@ -734,12 +1148,12 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                       .fadeIn(duration: 300.ms)
                       .slideY(begin: -0.1, end: 0, duration: 300.ms),
                 ),
-                SizedBox(height: 20),
+                const SizedBox(height: 20),
 
                 // "What changed since you last viewed this?" banner.
                 if (_hasChanges) ...[
                   _buildWhatChanged(),
-                  SizedBox(height: 16),
+                  const SizedBox(height: 16),
                 ],
 
                 // Topic overview: status, decisions, your actions at a glance.
@@ -747,7 +1161,7 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                     .animate()
                     .fadeIn(duration: 400.ms)
                     .slideY(begin: 0.08, end: 0),
-                SizedBox(height: 24),
+                const SizedBox(height: 24),
 
                 // Analytics Card (Vibe + Talk-Time)
                 if (_thread!.vibe != null)
@@ -763,46 +1177,61 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
                     child: _buildAudioPlaybackSection(),
                   ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.1, end: 0),
 
-                // Pending Tasks section
-                if (_hasPendingTasks())
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 24),
-                    child: _buildPendingTasks(),
-                  ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.1, end: 0),
+                // Action items task completion progress bar
+                _buildTaskProgressBar(),
+
+                // Category filter chips
+                _buildFilterChips(),
 
                 // Smart blocks
-                ...List.generate(_blocks.length, (index) {
-                  final block = _blocks[index];
-                  return Padding(
-                    padding: const EdgeInsets.only(bottom: 16),
-                    child: SmartBlockWidget(
-                      block: block,
-                      onToggleComplete: block.type == SmartBlockType.actionItem
-                          ? () => _toggleComplete(index)
-                          : null,
-                      onEdit: () => _editBlock(index),
-                      onAssign: block.type == SmartBlockType.actionItem
-                          ? () => _assignBlock(index)
-                          : null,
-                    )
-                        .animate()
-                        .fadeIn(
-                          duration: 400.ms,
-                          delay: (100 * index).ms,
-                        )
-                        .slideY(
-                          begin: 0.08,
-                          end: 0,
-                          duration: 400.ms,
-                          delay: (100 * index).ms,
-                          curve: Curves.easeOut,
-                        ),
-                  );
-                }),
+                if (_filteredBlocks.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 32),
+                    child: Center(
+                      child: Text(
+                        'No items matching "$_selectedCategory"',
+                        style: TextStyle(color: context.colors.textMuted, fontSize: 13),
+                      ),
+                    ),
+                  )
+                else
+                  ...List.generate(_filteredBlocks.length, (index) {
+                    final block = _filteredBlocks[index];
+                    final originalIndex = _blocks.indexOf(block);
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: SmartBlockWidget(
+                        block: block,
+                        onToggleComplete: block.type == SmartBlockType.actionItem
+                            ? () => _toggleComplete(originalIndex)
+                            : null,
+                        onEdit: () => _editBlock(originalIndex),
+                        onAssign: block.type == SmartBlockType.actionItem
+                            ? () => _assignBlock(originalIndex)
+                            : null,
+                        onReact: (emoji) => _toggleBlockReaction(originalIndex, emoji),
+                        onChangePriority: (p) => _changePriority(originalIndex, p),
+                        onChangeDueDate: () => _pickDueDate(originalIndex),
+                        onDelete: () => _deleteBlock(originalIndex),
+                      )
+                          .animate()
+                          .fadeIn(
+                            duration: 400.ms,
+                            delay: (50 * index).ms,
+                          )
+                          .slideY(
+                            begin: 0.08,
+                            end: 0,
+                            duration: 400.ms,
+                            delay: (50 * index).ms,
+                            curve: Curves.easeOut,
+                          ),
+                    );
+                  }),
 
                 // AI drafting indicator
                 if (_thread!.isGenerating) ...[
-                  SizedBox(height: 8),
+                  const SizedBox(height: 8),
                   _AIDraftingIndicator(),
                 ],
 
@@ -833,8 +1262,107 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
     );
   }
 
-  bool _hasPendingTasks() {
-    return _blocks.any((b) => b.type == SmartBlockType.actionItem && !b.isCompleted);
+  Widget _buildTaskProgressBar() {
+    final total = _blocks.where((b) => b.type == SmartBlockType.actionItem).length;
+    if (total == 0) return const SizedBox.shrink();
+    final completed = _blocks.where((b) => b.type == SmartBlockType.actionItem && b.isCompleted).length;
+    final progress = total > 0 ? (completed / total) : 0.0;
+    final pct = (progress * 100).toInt();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: context.colors.border.withValues(alpha: 0.5)),
+        boxShadow: AppShadows.card,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.task_alt_rounded, size: 18, color: context.colors.primary),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Action Items Progress',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w700,
+                      color: context.colors.textMain,
+                    ),
+                  ),
+                ],
+              ),
+              Text(
+                '$completed of $total ($pct%)',
+                style: GoogleFonts.plusJakartaSans(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: context.colors.primary,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 6,
+              backgroundColor: context.colors.border.withValues(alpha: 0.3),
+              color: context.colors.primary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFilterChips() {
+    final categories = ['All', 'My Tasks', 'Action Items', 'Decisions', 'Summary', 'Insights'];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            ...categories.map((cat) {
+              final isSelected = _selectedCategory == cat;
+              return Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ChoiceChip(
+                  label: Text(cat),
+                  selected: isSelected,
+                  selectedColor: context.colors.primaryLight,
+                  onSelected: (_) => setState(() => _selectedCategory = cat),
+                  labelStyle: TextStyle(
+                    color: isSelected ? context.colors.primary : context.colors.textMain,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                  ),
+                ),
+              );
+            }),
+            OutlinedButton.icon(
+              onPressed: _showAddBlockModal,
+              icon: const Icon(Icons.add, size: 14),
+              label: const Text('Add Item', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: context.colors.primary,
+                side: BorderSide(color: context.colors.primary.withValues(alpha: 0.5)),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.full)),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildWhatChanged() {
@@ -1175,91 +1703,6 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
               ),
             ],
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildPendingTasks() {
-    final pendingBlocks = _blocks.where((b) => b.type == SmartBlockType.actionItem && !b.isCompleted).toList();
-    
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: context.colors.primaryLight.withValues(alpha: 0.3),
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: context.colors.primary.withValues(alpha: 0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.checklist_rounded, size: 18, color: context.colors.primary),
-              SizedBox(width: 8),
-              Text(
-                'PENDING TASKS (${pendingBlocks.length})',
-                style: GoogleFonts.plusJakartaSans(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w800,
-                  color: context.colors.primary,
-                  letterSpacing: 1.0,
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 12),
-          ...pendingBlocks.map((block) {
-            final indexInBlocks = _blocks.indexOf(block);
-            return Padding(
-              padding: const EdgeInsets.only(bottom: 8.0),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  GestureDetector(
-                    onTap: () => _toggleComplete(indexInBlocks),
-                    child: Icon(
-                      Icons.circle_outlined,
-                      size: 20,
-                      color: context.colors.primary,
-                    ),
-                  ),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      block.content,
-                      style: GoogleFonts.plusJakartaSans(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                        color: context.colors.textMain,
-                        height: 1.4,
-                      ),
-                    ),
-                  ),
-                  SizedBox(width: 8),
-                  GestureDetector(
-                    onTap: () => _assignBlock(indexInBlocks),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: context.colors.surface,
-                        borderRadius: BorderRadius.circular(AppRadius.full),
-                        border: Border.all(color: context.colors.border.withValues(alpha: 0.5)),
-                      ),
-                      child: Text(
-                        block.assignee != null ? '@${block.assignee}' : 'Assign',
-                        style: GoogleFonts.plusJakartaSans(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: block.assignee != null ? context.colors.primary : context.colors.textMuted,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          }),
         ],
       ),
     );

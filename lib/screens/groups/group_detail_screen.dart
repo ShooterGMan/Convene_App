@@ -36,7 +36,7 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
   }
 
   @override
@@ -146,6 +146,7 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
           tabs: const [
             Tab(text: 'Threads'),
             Tab(text: 'Members'),
+            Tab(text: 'Analytics'),
           ],
         ),
       ),
@@ -154,6 +155,7 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
         children: [
           _ThreadsTab(threads: threads),
           _MembersTab(group: group),
+          _AnalyticsTab(group: group, threads: threads),
         ],
       ),
     );
@@ -787,6 +789,242 @@ class _MemberRow extends StatelessWidget {
           fontWeight: FontWeight.w700,
           color: context.colors.primary,
         ),
+      ),
+    );
+  }
+}
+
+// ─── ANALYTICS TAB ───────────────────────────────────────
+
+class _AnalyticsTab extends StatelessWidget {
+  final Group group;
+  final List<ContextThread> threads;
+
+  const _AnalyticsTab({required this.group, required this.threads});
+
+  @override
+  Widget build(BuildContext context) {
+    final allDecisions = <SmartBlock>[];
+    final allActionItems = <SmartBlock>[];
+
+    for (final t in threads) {
+      allDecisions.addAll(t.blocks.where((b) => b.type == SmartBlockType.decision));
+      allActionItems.addAll(t.blocks.where((b) => b.type == SmartBlockType.actionItem));
+    }
+
+    final totalTasks = allActionItems.length;
+    final completedTasks = allActionItems.where((b) => b.isCompleted).length;
+    final taskProgress = totalTasks > 0 ? (completedTasks / totalTasks) : 0.0;
+    final taskPct = (taskProgress * 100).toInt();
+
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        // 1. High-level metric tiles
+        Row(
+          children: [
+            Expanded(
+              child: _buildMetricTile(
+                context,
+                icon: Icons.forum_rounded,
+                label: 'Meetings',
+                value: '${threads.length}',
+                color: const Color(0xFF6366F1),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildMetricTile(
+                context,
+                icon: Icons.gavel_rounded,
+                label: 'Decisions',
+                value: '${allDecisions.length}',
+                color: const Color(0xFFF59E0B),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _buildMetricTile(
+                context,
+                icon: Icons.group_rounded,
+                label: 'Members',
+                value: '${group.members.length}',
+                color: const Color(0xFF10B981),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
+
+        // 2. Action Items Progress Card
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: context.colors.surface,
+            borderRadius: BorderRadius.circular(AppRadius.md),
+            border: Border.all(color: context.colors.border.withValues(alpha: 0.6)),
+            boxShadow: AppShadows.card,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.task_alt_rounded, size: 18, color: context.colors.primary),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Group Action Items',
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: context.colors.textMain,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    totalTasks == 0 ? 'No tasks yet' : '$completedTasks of $totalTasks ($taskPct%)',
+                    style: GoogleFonts.plusJakartaSans(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                      color: context.colors.primary,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: taskProgress,
+                  minHeight: 8,
+                  backgroundColor: context.colors.border.withValues(alpha: 0.3),
+                  color: context.colors.primary,
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+
+        // 3. Recent Decisions List
+        Row(
+          children: [
+            Icon(Icons.lightbulb_outline_rounded, size: 18, color: context.colors.primary),
+            const SizedBox(width: 8),
+            Text(
+              'KEY GROUP DECISIONS (${allDecisions.length})',
+              style: GoogleFonts.plusJakartaSans(
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                color: context.colors.textMuted,
+                letterSpacing: 1.0,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+
+        if (allDecisions.isEmpty)
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 16),
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: context.colors.surface,
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              border: Border.all(color: context.colors.border.withValues(alpha: 0.5)),
+            ),
+            child: Text(
+              'No decisions recorded for this group yet.',
+              style: TextStyle(color: context.colors.textMuted, fontSize: 13),
+            ),
+          )
+        else
+          ...allDecisions.take(10).map((d) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: context.colors.surface,
+                  borderRadius: BorderRadius.circular(AppRadius.md),
+                  border: Border.all(color: context.colors.border.withValues(alpha: 0.5)),
+                  boxShadow: AppShadows.card,
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.only(top: 2),
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF59E0B).withValues(alpha: 0.15),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.check, size: 12, color: Color(0xFFF59E0B)),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        d.content,
+                        style: GoogleFonts.plusJakartaSans(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: context.colors.textMain,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+      ],
+    );
+  }
+
+  Widget _buildMetricTile(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required String value,
+    required Color color,
+  }) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: context.colors.border.withValues(alpha: 0.6)),
+        boxShadow: AppShadows.card,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: color),
+          const SizedBox(height: 10),
+          Text(
+            value,
+            style: GoogleFonts.plusJakartaSans(
+              fontSize: 20,
+              fontWeight: FontWeight.w800,
+              color: context.colors.textMain,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: context.colors.textMuted,
+            ),
+          ),
+        ],
       ),
     );
   }

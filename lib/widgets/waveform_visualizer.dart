@@ -29,7 +29,7 @@ class _WaveformVisualizerState extends State<WaveformVisualizer> {
   @override
   void initState() {
     super.initState();
-    _amplitudes = List.filled(widget.barCount, 0.1);
+    _amplitudes = List.filled(widget.barCount, 0.1, growable: true);
     
     if (widget.amplitudeStream != null) {
       _subscription = widget.amplitudeStream!.listen((amplitude) {

@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui';
 
 import 'package:cloud_functions/cloud_functions.dart';
@@ -7,13 +10,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:http/http.dart' as http;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:go_router/go_router.dart';
-import 'package:livekit_client/livekit_client.dart';
-
+import 'package:record/record.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+
 import '../../models/user.dart';
-import '../../providers/auth_provider.dart';
 import '../../repositories/firestore_repository.dart';
 import '../../services/background_meeting_service.dart';
 import '../../theme/app_theme.dart';
@@ -21,11 +24,9 @@ import '../../widgets/recording_consent.dart';
 import '../../widgets/waveform_visualizer.dart';
 import '../thread/context_thread_screen.dart';
 
-/// Records an in-person / solo session by joining an audio-only LiveKit room.
-/// A server-side egress bot (see functions/src/webhook.ts) records the room and
-/// generates the summary automatically once the session ends - this screen never
-/// touches the audio itself, it just joins, waits, and watches Firestore for the
-/// resulting thread.
+/// Records an in-person / solo session by directly capturing microphone audio
+/// on the device. When the session ends, the audio is uploaded directly to the
+/// backend for instant Gemini summarization with zero cloud egress lag or frame drop.
 class ActiveRecordingScreen extends ConsumerStatefulWidget {
   final String meetingTitle;
   final String meetingId;
@@ -45,8 +46,10 @@ class ActiveRecordingScreen extends ConsumerStatefulWidget {
 }
 
 class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
-  final Room _room = Room();
-  EventsListener<RoomEvent>? _roomListener;
+  AudioRecorder? _audioRecorder;
+  StreamSubscription? _amplitudeSub;
+  final StreamController<double> _amplitudeController = StreamController<double>.broadcast();
+
   Timer? _timer;
   int _elapsedSeconds = 0;
   bool _isConnecting = true;
@@ -57,15 +60,14 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
   StreamSubscription? _meetingSub;
   Timer? _summaryTimeoutTimer;
 
-  // Recording captures people physically in the room, so we don't connect (and
-  // therefore don't start the LiveKit egress recording) until the recorder has
-  // confirmed everyone present agreed - see OfflineRecordingConsentGate.
+  // Recording captures people physically in the room, so we don't start recording
+  // until the recorder has confirmed everyone present agreed.
   bool _consented = false;
 
   @override
   void initState() {
     super.initState();
-    debugPrint('[REC] initState meetingId=${widget.meetingId}');
+    _audioRecorder = AudioRecorder();
   }
 
   void _onConsent() {
@@ -75,11 +77,11 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
       debugPrint('Wakelock enable error: $e');
     }
     setState(() => _consented = true);
-    _connect();
+    _startRecording();
   }
 
-  Future<void> _connect() async {
-    debugPrint('[REC] requesting LiveKit token...');
+  Future<void> _startRecording() async {
+    debugPrint('[REC] starting in-person audio recording session for ${widget.meetingId}');
     try {
       if (!kIsWeb) {
         try {
@@ -92,51 +94,47 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
         }
       }
 
-      final result = await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('getLivekitToken').call({
-        'meetingId': widget.meetingId,
-        'groupId': widget.groupId,
-        'displayName': ref.read(appUserProvider).name,
+      final recorder = _audioRecorder;
+      if (recorder == null) throw Exception("Recorder not initialized.");
+
+      final hasPermission = await recorder.hasPermission();
+      if (!hasPermission) {
+        throw Exception("Microphone permission denied. Please allow microphone access.");
+      }
+
+      final String filePath;
+      if (kIsWeb) {
+        filePath = '';
+      } else {
+        filePath = '${Directory.systemTemp.path}/in_person_${widget.meetingId}_${DateTime.now().millisecondsSinceEpoch}.ogg';
+      }
+
+      await recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.opus,
+          sampleRate: 48000,
+          bitRate: 64000,
+        ),
+        path: filePath,
+      );
+
+      // Listen to live amplitude changes and stream to the waveform visualizer
+      _amplitudeSub = recorder.onAmplitudeChanged(const Duration(milliseconds: 100)).listen((amp) {
+        // amp.current is typically in dBFS (e.g. -60 dB to 0 dB)
+        final normalized = ((amp.current + 60) / 60).clamp(0.08, 1.0);
+        if (!_amplitudeController.isClosed) {
+          _amplitudeController.add(normalized);
+        }
       });
-      final String token = result.data['token'];
-      const String livekitUrl = "wss://convene-app-a9liwgoq.livekit.cloud";
-      debugPrint('[REC] token received, connecting to $livekitUrl room=${widget.meetingId}');
 
-      _roomListener = _room.createListener();
-      _roomListener!
-        ..on<RoomConnectedEvent>((e) => debugPrint('[REC] RoomConnectedEvent'))
-        ..on<RoomDisconnectedEvent>((e) => debugPrint('[REC] RoomDisconnectedEvent reason=${e.reason}'))
-        ..on<RoomReconnectingEvent>((e) => debugPrint('[REC] RoomReconnectingEvent'))
-        ..on<RoomReconnectedEvent>((e) => debugPrint('[REC] RoomReconnectedEvent'))
-        ..on<LocalTrackPublishedEvent>((e) => debugPrint('[REC] LocalTrackPublishedEvent sid=${e.publication.sid} kind=${e.publication.kind} muted=${e.publication.muted}'))
-        ..on<LocalTrackUnpublishedEvent>((e) => debugPrint('[REC] LocalTrackUnpublishedEvent sid=${e.publication.sid}'))
-        ..on<ParticipantConnectedEvent>((e) => debugPrint('[REC] ParticipantConnectedEvent ${e.participant.identity}'))
-        ..on<ParticipantDisconnectedEvent>((e) => debugPrint('[REC] ParticipantDisconnectedEvent ${e.participant.identity}'));
-
-      await _room.connect(livekitUrl, token);
-      debugPrint('[REC] connect() returned. room.connectionState=${_room.connectionState}');
-
-      try {
-        await _room.localParticipant?.setMicrophoneEnabled(true);
-      } catch (e) {
-        debugPrint('[REC] setMicrophoneEnabled error: $e');
-      }
-      debugPrint('[REC] setMicrophoneEnabled(true) returned.');
-
-      final localTracks = _room.localParticipant?.trackPublications.values.toList() ?? [];
-      debugPrint('[REC] local track publications count=${localTracks.length}');
-      for (final pub in localTracks) {
-        debugPrint('[REC]   track sid=${pub.sid} kind=${pub.kind} source=${pub.source} muted=${pub.muted} subscribed=${pub.subscribed}');
-      }
-
-      if (!mounted) {
-        debugPrint('[REC] WARNING: widget unmounted immediately after connect - navigated away already?');
-        return;
-      }
+      if (!mounted) return;
       setState(() => _isConnecting = false);
+
       BackgroundMeetingService.start(
         title: 'Recording Session Active',
         text: '${widget.meetingTitle} is recording in the background',
       );
+
       _timer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (!_isEnding && mounted) {
           setState(() => _elapsedSeconds++);
@@ -160,14 +158,13 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
     } catch (e) {
       debugPrint('Wakelock disable error: $e');
     }
-    debugPrint('[REC] dispose() called - room.connectionState=${_room.connectionState}');
     BackgroundMeetingService.stop();
     _timer?.cancel();
     _meetingSub?.cancel();
     _summaryTimeoutTimer?.cancel();
-    _roomListener?.dispose();
-    _room.disconnect();
-    _room.dispose();
+    _amplitudeSub?.cancel();
+    _amplitudeController.close();
+    _audioRecorder?.dispose();
     super.dispose();
   }
 
@@ -180,37 +177,67 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
   Future<void> _endSession() async {
     setState(() => _isEnding = true);
     _timer?.cancel();
+    _amplitudeSub?.cancel();
 
     try {
-      // We're always the sole participant here, so it's safe to finalize the
-      // egress immediately instead of waiting on LiveKit's empty-room timeout.
-      final result = await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('stopMeetingEgress').call({
-        'meetingId': widget.meetingId,
-      });
-      await _room.disconnect();
+      final recorder = _audioRecorder;
+      if (recorder == null) throw Exception("Recorder not initialized.");
 
-      final stoppedCount = result.data['stopped'] as int? ?? 0;
-      if (stoppedCount == 0) {
-        // No recording was ever running for this session (e.g. it ended almost
-        // instantly) - there's nothing to summarize, so don't leave the user
-        // waiting on a summary that will never arrive.
+      final recordedPath = await recorder.stop();
+      if (recordedPath == null || recordedPath.isEmpty) {
         if (mounted) {
           setState(() => _isEnding = false);
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Session ended before any audio was captured - nothing to summarize.')),
+            const SnackBar(content: Text('Session ended before audio was captured - nothing to summarize.')),
           );
           Navigator.of(context).pop();
         }
         return;
       }
 
+      Uint8List audioBytes;
+      if (kIsWeb) {
+        final response = await http.get(Uri.parse(recordedPath));
+        audioBytes = response.bodyBytes;
+      } else {
+        final file = File(recordedPath);
+        if (!await file.exists()) throw Exception("Recorded audio file not found.");
+        audioBytes = await file.readAsBytes();
+        try {
+          await file.delete();
+        } catch (_) {}
+      }
+
+      if (audioBytes.isEmpty) {
+        if (mounted) {
+          setState(() => _isEnding = false);
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Recorded audio was empty - nothing to summarize.')),
+          );
+          Navigator.of(context).pop();
+        }
+        return;
+      }
+
+      const mimeType = 'audio/ogg';
+      final base64Audio = base64Encode(audioBytes);
+
+      // Start watching meeting doc in Firestore for summary ready / threadId
       _watchForSummary();
+
+      // Upload directly to Cloud Function for immediate AI processing
+      final functions = FirebaseFunctions.instanceFor(region: 'asia-south1');
+      await functions.httpsCallable('uploadMeetingAudio').call({
+        'meetingId': widget.meetingId,
+        'audioBase64': base64Audio,
+        'mimeType': mimeType,
+      });
     } catch (e) {
-      debugPrint('Failed to end session: $e');
+      debugPrint('[REC] Failed to end session / upload audio: $e');
       if (mounted) {
         setState(() => _isEnding = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to end session: $e')),
+          SnackBar(content: Text('Failed to process recording: $e')),
         );
       }
     }
@@ -221,7 +248,7 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
     _meetingSub = repo.streamMeeting(widget.meetingId).listen((meeting) {
       if (!mounted || meeting == null) return;
 
-      if (meeting.threadId != null) {
+      if (meeting.threadId != null && meeting.threadId!.isNotEmpty) {
         _summaryTimeoutTimer?.cancel();
         Navigator.of(context).pushReplacement(
           MaterialPageRoute(
@@ -234,20 +261,17 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
       if (meeting.summaryError != null) {
         _summaryTimeoutTimer?.cancel();
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Summary generation failed for this session.')),
+          SnackBar(content: Text('Summary generation failed: ${meeting.summaryError}')),
         );
         Navigator.of(context).pop();
       }
     });
 
-    // Summarization normally takes well under a minute; if it's still not
-    // ready after two, let the user leave instead of staring at a spinner -
-    // the thread will still show up in their group once it finishes.
     _summaryTimeoutTimer = Timer(const Duration(minutes: 2), () {
       if (mounted && _isEnding) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Still generating your summary - it will appear in the group shortly.'),
+            content: Text('Still generating your summary - it will appear in your Topics shortly.'),
           ),
         );
         Navigator.of(context).pop();
@@ -290,7 +314,7 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
                 _connectError = null;
                 _isConnecting = true;
               });
-              _connect();
+              _startRecording();
             })
           else if (_isConnecting)
             const Center(child: CircularProgressIndicator())
@@ -349,9 +373,11 @@ class _ActiveRecordingScreenState extends ConsumerState<ActiveRecordingScreen> {
 
                     SizedBox(height: 40),
 
-                    // Waveform visualizer (decorative - actual audio is handled
-                    // server-side by the egress bot, not on this device)
-                    WaveformVisualizer(height: 128)
+                    // Live real-time audio waveform visualizer
+                    WaveformVisualizer(
+                      height: 128,
+                      amplitudeStream: _amplitudeController.stream,
+                    )
                         .animate()
                         .fadeIn(duration: 600.ms, delay: 300.ms),
 

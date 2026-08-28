@@ -11,6 +11,7 @@ import '../models/meeting.dart';
 import '../providers/auth_provider.dart';
 import '../providers/data_providers.dart';
 import '../repositories/firestore_repository.dart';
+import '../services/calendar_service.dart';
 import '../theme/app_theme.dart';
 import 'avatar_stack.dart';
 
@@ -244,7 +245,37 @@ class _MeetingCardState extends ConsumerState<MeetingCard>
                   ),
                 ],
 
-                SizedBox(height: 16),
+                if (meeting.agenda.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: context.colors.background,
+                      borderRadius: BorderRadius.circular(AppRadius.sm),
+                      border: Border.all(color: context.colors.border.withValues(alpha: 0.5)),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.format_list_bulleted_rounded, size: 14, color: context.colors.primary),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Agenda (${meeting.agenda.length}): ${meeting.agenda.first}${meeting.agenda.length > 1 ? ' +${meeting.agenda.length - 1} more' : ''}',
+                            style: GoogleFonts.plusJakartaSans(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: context.colors.textMuted,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 16),
 
                 // Avatars + type badge row
                 Row(
@@ -313,33 +344,60 @@ class _MeetingCardState extends ConsumerState<MeetingCard>
                   ),
                 ],
                 
-                if (meeting.type == MeetingType.meet) ...[
+                if (!meeting.isPast) ...[
                   SizedBox(height: 12),
-                  SizedBox(
-                    width: double.infinity,
-                    child: OutlinedButton.icon(
-                      onPressed: () {
-                        final inviteLink = 'https://meeting-app-844aa.web.app/pre-join/${meeting.id}';
-                        Clipboard.setData(ClipboardData(text: inviteLink));
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Invite Link Copied!')),
-                        );
-                      },
-                      icon: Icon(Icons.copy, size: 18),
-                      label: Text('Copy Invite Link'),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: context.colors.primary,
-                        side: BorderSide(color: context.colors.primary.withValues(alpha: 0.5)),
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(AppRadius.full),
+                  Row(
+                    children: [
+                      if (meeting.type == MeetingType.meet) ...[
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: () {
+                              final inviteLink = 'https://meeting-app-844aa.web.app/pre-join/${meeting.id}';
+                              Clipboard.setData(ClipboardData(text: inviteLink));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Invite Link Copied!')),
+                              );
+                            },
+                            icon: Icon(Icons.copy, size: 16),
+                            label: Text('Copy Link'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: context.colors.primary,
+                              side: BorderSide(color: context.colors.primary.withValues(alpha: 0.4)),
+                              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(AppRadius.full),
+                              ),
+                              textStyle: GoogleFonts.plusJakartaSans(
+                                fontWeight: FontWeight.w700,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
                         ),
-                        textStyle: GoogleFonts.plusJakartaSans(
-                          fontWeight: FontWeight.w700,
-                          fontSize: 14,
+                        SizedBox(width: 8),
+                      ],
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            CalendarService.showAddToCalendarSheet(context, meeting: meeting);
+                          },
+                          icon: Icon(Icons.calendar_month_rounded, size: 16),
+                          label: Text('Add to Calendar'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: context.colors.textMain,
+                            side: BorderSide(color: context.colors.textMuted.withValues(alpha: 0.3)),
+                            padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(AppRadius.full),
+                            ),
+                            textStyle: GoogleFonts.plusJakartaSans(
+                              fontWeight: FontWeight.w700,
+                              fontSize: 13,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
                 ],
               ],

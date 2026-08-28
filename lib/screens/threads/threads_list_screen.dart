@@ -44,15 +44,25 @@ class _ThreadsListScreenState extends ConsumerState<ThreadsListScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Topics',
-                      style: GoogleFonts.plusJakartaSans(
-                        fontSize: 32,
-                        fontWeight: FontWeight.w700,
-                        color: context.colors.textMain,
-                      ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'Topics',
+                          style: GoogleFonts.plusJakartaSans(
+                            fontSize: 32,
+                            fontWeight: FontWeight.w700,
+                            color: context.colors.textMain,
+                          ),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.manage_search_rounded, size: 28, color: context.colors.primary),
+                          tooltip: 'Search & Discovery Hub',
+                          onPressed: () => context.push('/search'),
+                        ),
+                      ],
                     ),
-                    SizedBox(height: 16),
+                    const SizedBox(height: 16),
                     // Semantic Search Bar
                     Container(
                       decoration: BoxDecoration(

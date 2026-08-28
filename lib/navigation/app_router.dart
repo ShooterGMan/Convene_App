@@ -8,6 +8,8 @@ import '../screens/groups/group_detail_screen.dart';
 import '../screens/groups/join_group_screen.dart';
 import '../screens/settings/settings_screen.dart';
 import '../screens/thread/context_thread_screen.dart';
+import '../screens/search/search_discovery_screen.dart';
+import '../screens/tasks/personal_tasks_insights_screen.dart';
 import '../screens/session/active_recording_screen.dart';
 import '../screens/session/live_meeting_screen.dart';
 import '../screens/session/pre_join_screen.dart';
@@ -123,6 +125,16 @@ final appRouterProvider = Provider<GoRouter>((ref) {
     ),
 
     // Full-screen routes (no bottom nav)
+    GoRoute(
+      path: '/search',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) => const SearchDiscoveryScreen(),
+    ),
+    GoRoute(
+      path: '/tasks',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) => const PersonalTasksInsightsScreen(),
+    ),
     GoRoute(
       path: '/thread/:threadId',
       parentNavigatorKey: _rootNavigatorKey,

@@ -67,6 +67,7 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
 
   // UI States
   bool _isChatVisible = false;
+  int _unreadChatCount = 0;
   bool _isSpeakerView = false;
   bool _isHandRaised = false;
   final List<String> _raisedHandQueue = [];
@@ -130,51 +131,91 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
       const String livekitUrl = "wss://convene-app-a9liwgoq.livekit.cloud";
 
       _listener = _room.createListener();
-      _listener!.on<DataReceivedEvent>((event) {
-        final text = utf8.decode(event.data);
-        if (mounted) {
-          if (text.startsWith('REACTION:')) {
-            final emoji = text.substring(9);
-            _showReaction(emoji);
-          } else if (text.startsWith('HAND_RAISE:')) {
-            final identity = text.substring(11);
-            if (!_raisedHandQueue.contains(identity)) {
-              setState(() => _raisedHandQueue.add(identity));
-            }
-          } else if (text.startsWith('HAND_LOWER:')) {
-            final identity = text.substring(11);
-            setState(() => _raisedHandQueue.remove(identity));
-          } else if (text.startsWith('CAPTION:')) {
-            final parts = text.substring(8).split(':');
-            final speaker = parts.first;
-            final captionText = parts.skip(1).join(':');
-            _captionTimer?.cancel();
-            setState(() {
-              _currentCaptionSpeaker = speaker;
-              _currentCaption = captionText;
-            });
-            _captionTimer = Timer(const Duration(seconds: 4), () {
-              if (mounted) setState(() => _currentCaption = null);
-            });
-          } else if (text.startsWith('HIGHLIGHT:')) {
-            final highlight = text.substring(10);
-            _highlightTimer?.cancel();
-            setState(() {
-              _liveHighlightBadge = highlight;
-            });
-            _highlightTimer = Timer(const Duration(seconds: 5), () {
-              if (mounted) setState(() => _liveHighlightBadge = null);
-            });
-          } else {
-            setState(() {
-              _messages.add({
-                'sender': event.participant?.name.isNotEmpty == true ? event.participant!.name : (event.participant?.identity ?? 'Unknown'),
-                'text': text,
+      _listener!
+        ..on<DataReceivedEvent>((event) {
+          final text = utf8.decode(event.data);
+          if (mounted) {
+            if (text.startsWith('REACTION:')) {
+              final emoji = text.substring(9);
+              _showReaction(emoji);
+            } else if (text.startsWith('HAND_RAISE:')) {
+              final identity = text.substring(11);
+              if (!_raisedHandQueue.contains(identity)) {
+                setState(() => _raisedHandQueue.add(identity));
+              }
+            } else if (text.startsWith('HAND_LOWER:')) {
+              final identity = text.substring(11);
+              setState(() => _raisedHandQueue.remove(identity));
+            } else if (text.startsWith('CAPTION:')) {
+              final parts = text.substring(8).split(':');
+              final speaker = parts.first;
+              final captionText = parts.skip(1).join(':');
+              _captionTimer?.cancel();
+              setState(() {
+                _currentCaptionSpeaker = speaker;
+                _currentCaption = captionText;
               });
-            });
+              _captionTimer = Timer(const Duration(seconds: 4), () {
+                if (mounted) setState(() => _currentCaption = null);
+              });
+            } else if (text.startsWith('HIGHLIGHT:')) {
+              final highlight = text.substring(10);
+              _highlightTimer?.cancel();
+              setState(() {
+                _liveHighlightBadge = highlight;
+              });
+              _highlightTimer = Timer(const Duration(seconds: 5), () {
+                if (mounted) setState(() => _liveHighlightBadge = null);
+              });
+            } else {
+              setState(() {
+                _messages.add({
+                  'sender': event.participant?.name.isNotEmpty == true
+                      ? event.participant!.name
+                      : (event.participant?.identity ?? 'Unknown'),
+                  'text': text,
+                  'time': DateTime.now(),
+                });
+                if (!_isChatVisible) {
+                  _unreadChatCount++;
+                }
+              });
+            }
           }
-        }
-      });
+        })
+        ..on<ActiveSpeakersChangedEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<ParticipantConnectedEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<ParticipantDisconnectedEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<TrackSubscribedEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<TrackUnsubscribedEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<TrackMutedEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<TrackUnmutedEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<LocalTrackPublishedEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<LocalTrackUnpublishedEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<RoomReconnectingEvent>((_) {
+          if (mounted) setState(() {});
+        })
+        ..on<RoomReconnectedEvent>((_) {
+          if (mounted) setState(() {});
+        });
       
       if (!kIsWeb) {
         try {
@@ -586,10 +627,34 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
                 ),
               ],
               const SizedBox(width: 10),
-              _controlButton(
-                icon: Icons.more_horiz,
-                tooltip: 'More',
-                onTap: () => _showMoreMenu(isDesktop),
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  _controlButton(
+                    icon: Icons.more_horiz,
+                    tooltip: 'More',
+                    onTap: () => _showMoreMenu(isDesktop),
+                  ),
+                  if (_unreadChatCount > 0)
+                    Positioned(
+                      top: -2,
+                      right: -2,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: const BoxDecoration(
+                          color: Colors.redAccent,
+                          shape: BoxShape.circle,
+                        ),
+                        constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                        child: Center(
+                          child: Text(
+                            '$_unreadChatCount',
+                            style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(width: 10),
               _buildLeaveButton(),
@@ -654,86 +719,123 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
       context: context,
       backgroundColor: Colors.grey.shade900,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (sheetCtx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
-            ),
-            const SizedBox(height: 16),
-            // Recording status, spelled out plainly.
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Row(
-                children: [
-                  Container(
-                    width: 9,
-                    height: 9,
-                    decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Recording for summary', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
-                        SizedBox(height: 2),
-                        Text('Audio is transcribed to build your AI summary.',
-                            style: TextStyle(color: Colors.white54, fontSize: 12)),
-                      ],
-                    ),
-                  ),
-                  Text(
-                    _formattedElapsed,
-                    style: const TextStyle(
-                      color: Colors.white70,
-                      fontWeight: FontWeight.w700,
-                      fontFeatures: [FontFeature.tabularFigures()],
-                    ),
-                  ),
-                ],
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (context, setSheetState) => SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SizedBox(height: 12),
+              Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2)),
               ),
-            ),
-            const Divider(color: Colors.white24, height: 28),
-            _moreTile(sheetCtx, Icons.person_add, 'Copy invite link', _copyInviteLink),
-            _moreTile(sheetCtx, Icons.forum_rounded, 'Chat & people', () {
-              if (isDesktop) {
-                setState(() => _isChatVisible = true);
-              } else {
-                _showMobileChatSheet();
-              }
-            }),
-            _moreTile(
-              sheetCtx,
-              _isSpeakerView ? Icons.grid_view_rounded : Icons.person_rounded,
-              _isSpeakerView ? 'Grid view' : 'Speaker view',
-              () => setState(() => _isSpeakerView = !_isSpeakerView),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  for (final emoji in const ['👍', '❤️', '👏', '😂', '🎉', '🙌'])
-                    _sheetReaction(sheetCtx, emoji),
-                ],
+              const SizedBox(height: 16),
+              // Recording status, spelled out plainly.
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 9,
+                      height: 9,
+                      decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
+                    ),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Recording for summary', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                          SizedBox(height: 2),
+                          Text('Audio is transcribed to build your AI summary.',
+                              style: TextStyle(color: Colors.white54, fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      _formattedElapsed,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w700,
+                        fontFeatures: [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 8),
-          ],
+              const Divider(color: Colors.white24, height: 28),
+              _moreTile(sheetCtx, Icons.person_add, 'Copy invite link', _copyInviteLink),
+              _moreTile(
+                sheetCtx,
+                Icons.forum_rounded,
+                'Chat & people',
+                () {
+                  setState(() => _unreadChatCount = 0);
+                  if (isDesktop) {
+                    setState(() => _isChatVisible = true);
+                  } else {
+                    _showMobileChatSheet();
+                  }
+                },
+                badgeCount: _unreadChatCount,
+              ),
+              _moreTile(
+                sheetCtx,
+                _showSubtitles ? Icons.closed_caption_rounded : Icons.closed_caption_disabled_rounded,
+                _showSubtitles ? 'Hide live captions' : 'Show live captions',
+                () {
+                  setState(() => _showSubtitles = !_showSubtitles);
+                  setSheetState(() {});
+                },
+              ),
+              _moreTile(
+                sheetCtx,
+                _isSpeakerView ? Icons.grid_view_rounded : Icons.person_rounded,
+                _isSpeakerView ? 'Grid view' : 'Speaker view',
+                () => setState(() => _isSpeakerView = !_isSpeakerView),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    for (final emoji in const ['👍', '❤️', '👏', '😂', '🎉', '🙌'])
+                      _sheetReaction(sheetCtx, emoji),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _moreTile(BuildContext sheetCtx, IconData icon, String label, VoidCallback onTap) {
+  Widget _moreTile(
+    BuildContext sheetCtx,
+    IconData icon,
+    String label,
+    VoidCallback onTap, {
+    int badgeCount = 0,
+  }) {
     return ListTile(
       leading: Icon(icon, color: Colors.white),
       title: Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+      trailing: badgeCount > 0
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.redAccent,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                '$badgeCount new',
+                style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+              ),
+            )
+          : null,
       onTap: () {
         Navigator.pop(sheetCtx);
         onTap();
@@ -1033,6 +1135,7 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
       _messages.add({
         'sender': 'You',
         'text': text,
+        'time': DateTime.now(),
       });
       _chatController.clear();
     });
@@ -1418,9 +1521,28 @@ class _VideoWidgetState extends State<VideoWidget> {
   void initState() {
     super.initState();
     _listener = widget.participant.createListener();
-    _listener!.on<SpeakingChangedEvent>((event) {
-      if (mounted) setState(() {});
-    });
+    _listener!
+      ..on<SpeakingChangedEvent>((_) {
+        if (mounted) setState(() {});
+      })
+      ..on<TrackPublishedEvent>((_) {
+        if (mounted) setState(() {});
+      })
+      ..on<TrackUnpublishedEvent>((_) {
+        if (mounted) setState(() {});
+      })
+      ..on<TrackMutedEvent>((_) {
+        if (mounted) setState(() {});
+      })
+      ..on<TrackUnmutedEvent>((_) {
+        if (mounted) setState(() {});
+      })
+      ..on<TrackSubscribedEvent>((_) {
+        if (mounted) setState(() {});
+      })
+      ..on<TrackUnsubscribedEvent>((_) {
+        if (mounted) setState(() {});
+      });
   }
 
   @override

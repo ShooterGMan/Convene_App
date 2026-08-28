@@ -1,13 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:cloud_functions/cloud_functions.dart';
-import 'package:livekit_client/livekit_client.dart';
+import 'package:http/http.dart' as http;
+import 'package:record/record.dart';
 
 import '../providers/auth_provider.dart';
 import '../repositories/firestore_repository.dart';
@@ -27,12 +28,18 @@ class _VoiceSampleRecorderSheetState extends ConsumerState<VoiceSampleRecorderSh
   Timer? _countdownTimer;
   String? _errorMessage;
 
-  LocalAudioTrack? _nativeAudioTrack;
+  AudioRecorder? _audioRecorder;
+
+  @override
+  void initState() {
+    super.initState();
+    _audioRecorder = AudioRecorder();
+  }
 
   @override
   void dispose() {
     _countdownTimer?.cancel();
-    _nativeAudioTrack?.dispose();
+    _audioRecorder?.dispose();
     super.dispose();
   }
 
@@ -44,7 +51,29 @@ class _VoiceSampleRecorderSheetState extends ConsumerState<VoiceSampleRecorderSh
     });
 
     try {
-      _nativeAudioTrack = await LocalAudioTrack.create();
+      final recorder = _audioRecorder;
+      if (recorder == null) throw Exception("Recorder not initialized.");
+
+      final hasPermission = await recorder.hasPermission();
+      if (!hasPermission) {
+        throw Exception("Microphone permission denied. Please allow microphone access.");
+      }
+
+      final String filePath;
+      if (kIsWeb) {
+        filePath = '';
+      } else {
+        filePath = '${Directory.systemTemp.path}/voiceprint_${DateTime.now().millisecondsSinceEpoch}.ogg';
+      }
+
+      await recorder.start(
+        const RecordConfig(
+          encoder: AudioEncoder.opus,
+          sampleRate: 48000,
+          bitRate: 64000,
+        ),
+        path: filePath,
+      );
 
       _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (_secondsLeft > 1) {
@@ -73,10 +102,32 @@ class _VoiceSampleRecorderSheetState extends ConsumerState<VoiceSampleRecorderSh
     }
 
     try {
-      final audioBytes = Uint8List.fromList(
-          utf8.encode('CONVENE_VOICEPRINT_SAMPLE_V1_SAMPLE_AUDIO_MARKER_${DateTime.now().millisecondsSinceEpoch}'));
-      const mimeType = 'audio/ogg';
+      final recorder = _audioRecorder;
+      if (recorder == null) throw Exception("Recorder not initialized.");
 
+      final recordedPath = await recorder.stop();
+      if (recordedPath == null || recordedPath.isEmpty) {
+        throw Exception("No audio was captured. Please try again.");
+      }
+
+      Uint8List audioBytes;
+      if (kIsWeb) {
+        final response = await http.get(Uri.parse(recordedPath));
+        audioBytes = response.bodyBytes;
+      } else {
+        final file = File(recordedPath);
+        if (!await file.exists()) throw Exception("Recording file not found.");
+        audioBytes = await file.readAsBytes();
+        try {
+          await file.delete();
+        } catch (_) {}
+      }
+
+      if (audioBytes.isEmpty) {
+        throw Exception("Recorded audio sample was empty. Please try again.");
+      }
+
+      const mimeType = 'audio/ogg';
       final base64Audio = base64Encode(audioBytes);
       final uid = ref.read(currentUserProvider)?.uid;
       if (uid == null) throw Exception("User not signed in.");

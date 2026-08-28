@@ -303,40 +303,82 @@ export async function handleEgressEnded(egressInfo: any) {
     return;
   }
 
-  // LiveKit retries webhook deliveries that don't return quickly (Gemini
-  // processing takes several seconds), so the same egress_ended event can
-  // arrive multiple times *while the first attempt is still in flight*. A
-  // plain "does it already have a threadId" read-then-write check has a race
-  // window there - a retry can land and pass the check before the first
-  // attempt finishes writing threadId, and both end up generating a thread.
-  // Claim the meeting atomically in a transaction instead, so only one
-  // attempt can ever proceed. A claim older than 5 minutes with no result is
-  // treated as abandoned (e.g. a crashed attempt) and can be retried.
+  await processAudioAndSummarize(meetingId, objectKey);
+}
+
+/**
+ * Uploads directly recorded in-person meeting audio to GCS and triggers AI summarization.
+ * Bypasses LiveKit Egress completely for crystal-clear, zero-latency, 100% reliable in-person summaries.
+ */
+export const uploadMeetingAudio = functions.region("asia-south1")
+  .runWith({ secrets: WEBHOOK_SECRETS, timeoutSeconds: 300, memory: "1GB" })
+  .https.onCall(async (data, context) => {
+    if (!context.auth) {
+      throw new functions.https.HttpsError("unauthenticated", "User must be logged in.");
+    }
+    const { meetingId, audioBase64, mimeType } = data;
+    if (!meetingId || !audioBase64) {
+      throw new functions.https.HttpsError("invalid-argument", "meetingId and audioBase64 are required.");
+    }
+
+    // Verify user is authorized to join/record this meeting
+    await assertCanJoinMeeting(meetingId, context.auth.uid);
+
+    const buffer = Buffer.from(audioBase64, "base64");
+    const bucketName = egressBucket();
+    const bucket = admin.storage().bucket(bucketName);
+    const objectKey = `egress-tmp/${meetingId}-${Date.now()}.ogg`;
+    const file = bucket.file(objectKey);
+
+    await file.save(buffer, {
+      metadata: {
+        contentType: mimeType || "audio/ogg",
+      },
+    });
+
+    console.log(`Saved in-person audio to gs://${bucketName}/${objectKey} (${buffer.length} bytes). Processing summary...`);
+
+    await admin.firestore().collection("meetings").doc(meetingId).set(
+      {
+        summaryStatus: "processing",
+        lastActivityAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    const threadId = await processAudioAndSummarize(meetingId, objectKey, true);
+    return { success: true, threadId };
+  });
+
+export async function processAudioAndSummarize(meetingId: string, objectKey: string, forceClaim = false): Promise<string> {
   const db = admin.firestore();
   const STALE_CLAIM_MS = 5 * 60 * 1000;
   const meetingRef = db.collection("meetings").doc(meetingId);
 
-  const claimed = await db.runTransaction(async (tx) => {
-    const doc = await tx.get(meetingRef);
-    const data = doc.data();
-    if (data?.threadId) return false;
-    const claimedAt = data?.processingClaimedAt?.toMillis?.();
-    if (claimedAt && Date.now() - claimedAt < STALE_CLAIM_MS) return false;
-    tx.set(
-      meetingRef,
-      {
-        processingClaimedAt: admin.firestore.FieldValue.serverTimestamp(),
-        summaryStatus: "processing",
-        summaryError: admin.firestore.FieldValue.delete(),
-      },
-      { merge: true }
-    );
-    return true;
-  });
+  if (!forceClaim) {
+    const claimed = await db.runTransaction(async (tx) => {
+      const doc = await tx.get(meetingRef);
+      const data = doc.data();
+      if (data?.threadId) return false;
+      const claimedAt = data?.processingClaimedAt?.toMillis?.();
+      if (claimedAt && Date.now() - claimedAt < STALE_CLAIM_MS) return false;
+      tx.set(
+        meetingRef,
+        {
+          processingClaimedAt: admin.firestore.FieldValue.serverTimestamp(),
+          summaryStatus: "processing",
+          summaryError: admin.firestore.FieldValue.delete(),
+        },
+        { merge: true }
+      );
+      return true;
+    });
 
-  if (!claimed) {
-    console.log(`Meeting ${meetingId} is already processed or being processed, skipping duplicate.`);
-    return;
+    if (!claimed) {
+      console.log(`Meeting ${meetingId} is already processed or being processed, skipping duplicate.`);
+      const currentDoc = await meetingRef.get();
+      return currentDoc.data()?.threadId || "";
+    }
   }
 
   const existingMeetingDoc = await meetingRef.get();
@@ -503,7 +545,7 @@ export async function handleEgressEnded(egressInfo: any) {
     `;
 
     const result = await ai.models.generateContent({
-      model: "gemini-3.5-flash",
+      model: "gemini-2.0-flash",
       contents: [...audioParts, prompt],
     });
 
@@ -678,6 +720,8 @@ export async function handleEgressEnded(egressInfo: any) {
       speakerTracksSnapshot.docs.forEach((d) => batch.delete(d.ref));
       await batch.commit();
     }
+
+    return threadId;
   } catch (error: any) {
     console.error(`Failed to process recording for meeting ${meetingId}:`, error);
     console.log(JSON.stringify({
