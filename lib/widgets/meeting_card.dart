@@ -138,7 +138,7 @@ class _MeetingCardState extends ConsumerState<MeetingCard>
                       ),
                     ),
                     if (countdown != null) ...[
-                      SizedBox(width: 12),
+                      SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(
                           horizontal: 10,
@@ -159,6 +159,28 @@ class _MeetingCardState extends ConsumerState<MeetingCard>
                         ),
                       ),
                     ],
+                    SizedBox(width: 4),
+                    GestureDetector(
+                      onTap: () async {
+                        try {
+                          await ref.read(firestoreRepositoryProvider).setMeetingStarred(
+                                meeting.id,
+                                !meeting.isStarred,
+                              );
+                        } catch (e) {
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(content: Text('Failed to update: $e')),
+                            );
+                          }
+                        }
+                      },
+                      child: Icon(
+                        meeting.isStarred ? Icons.star_rounded : Icons.star_outline_rounded,
+                        color: meeting.isStarred ? Colors.amber : context.colors.textMuted,
+                        size: 26,
+                      ),
+                    ),
                   ],
                 ),
 
@@ -449,29 +471,40 @@ class _RsvpRow extends ConsumerWidget {
               'Attending?',
               style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w600, color: context.colors.textMuted),
             ),
-            const Spacer(),
-            _RsvpChip(
-              label: 'Yes',
-              count: meeting.yesCount,
-              isSelected: myStatus == RsvpStatus.yes,
-              color: Colors.green,
-              onTap: () => setStatus(RsvpStatus.yes),
-            ),
-            SizedBox(width: 6),
-            _RsvpChip(
-              label: 'Maybe',
-              count: meeting.maybeCount,
-              isSelected: myStatus == RsvpStatus.maybe,
-              color: Colors.orange,
-              onTap: () => setStatus(RsvpStatus.maybe),
-            ),
-            SizedBox(width: 6),
-            _RsvpChip(
-              label: 'No',
-              count: meeting.noCount,
-              isSelected: myStatus == RsvpStatus.no,
-              color: Colors.redAccent,
-              onTap: () => setStatus(RsvpStatus.no),
+            const SizedBox(width: 8),
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                reverse: true,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _RsvpChip(
+                      label: 'Yes',
+                      count: meeting.yesCount,
+                      isSelected: myStatus == RsvpStatus.yes,
+                      color: Colors.green,
+                      onTap: () => setStatus(RsvpStatus.yes),
+                    ),
+                    const SizedBox(width: 6),
+                    _RsvpChip(
+                      label: 'Maybe',
+                      count: meeting.maybeCount,
+                      isSelected: myStatus == RsvpStatus.maybe,
+                      color: Colors.orange,
+                      onTap: () => setStatus(RsvpStatus.maybe),
+                    ),
+                    const SizedBox(width: 6),
+                    _RsvpChip(
+                      label: 'No',
+                      count: meeting.noCount,
+                      isSelected: myStatus == RsvpStatus.no,
+                      color: Colors.redAccent,
+                      onTap: () => setStatus(RsvpStatus.no),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),

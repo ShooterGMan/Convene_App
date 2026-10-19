@@ -239,13 +239,14 @@ class _ScheduleMeetingSheetState extends ConsumerState<ScheduleMeetingSheet> {
       }
 
       if (mounted) {
+        final messenger = ScaffoldMessenger.of(context);
         Navigator.pop(context);
         final msg = !_syncWithCalendar || _selectedType != MeetingType.meet
             ? 'Meeting scheduled!'
             : calendarSynced
                 ? 'Meeting scheduled & synced to Google Calendar! 📅'
                 : 'Meeting scheduled! Opened Google Calendar template to save.';
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        messenger.showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (e) {
       if (mounted) {

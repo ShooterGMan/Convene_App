@@ -4,8 +4,10 @@ import '../models/app_notification.dart';
 import '../models/context_thread.dart';
 import '../models/group.dart';
 import '../models/group_invite.dart';
+import '../models/external_calendar_event.dart';
 import '../models/meeting.dart';
 import '../repositories/firestore_repository.dart';
+import '../services/calendar_service.dart';
 import 'auth_provider.dart';
 
 /// Groups the current user is a member of. Firestore rules require the query
@@ -86,3 +88,15 @@ class CalendarAutoSyncNotifier extends Notifier<bool> {
 }
 
 final calendarAutoSyncProvider = NotifierProvider<CalendarAutoSyncNotifier, bool>(CalendarAutoSyncNotifier.new);
+
+/// Fetches external Google Calendar events for a rolling 4-month window (-1 to +3 months)
+final externalCalendarEventsProvider = FutureProvider<List<ExternalCalendarEvent>>((ref) async {
+  final autoSync = ref.watch(calendarAutoSyncProvider);
+  if (!autoSync) return [];
+
+  final svc = ref.watch(calendarServiceProvider);
+  final now = DateTime.now();
+  final start = DateTime(now.year, now.month - 1, 1);
+  final end = DateTime(now.year, now.month + 3, 0);
+  return svc.fetchExternalEvents(start, end);
+});

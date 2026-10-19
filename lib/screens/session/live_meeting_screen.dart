@@ -13,6 +13,7 @@ import 'dart:convert';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import '../../services/background_meeting_service.dart';
 import '../../theme/app_theme.dart';
+import '../../widgets/co_located_sheet.dart';
 
 /// Android requires an active foreground service (of type "mediaProjection")
 /// running BEFORE screen capture starts, or it fails outright - flutter_webrtc
@@ -38,6 +39,8 @@ Future<void> _setAndroidScreenShareForegroundService(bool active) async {
     debugPrint('Screen share foreground service call failed: $e');
   }
 }
+
+enum _LeaveAction { leave, endEgress, endForAll }
 
 class LiveMeetingScreen extends StatefulWidget {
   final String meetingId;
@@ -320,54 +323,70 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
     });
   }
 
-  /// Leaves the room. Transcription and summarization happen entirely server-side
-  /// (a LiveKit egress bot records the whole room and a Cloud Function summarizes it
-  /// once the room is empty), so the client has nothing to send - it just leaves.
-  /// If this is the last participant, proactively (but not blockingly) stop the
-  /// egress so the summary doesn't wait on LiveKit's default empty-room timeout.
-  /// The stop-egress network call can take a few seconds (or longer on a bad
-  /// connection), and there's nothing for the user to wait for - the room
-  /// disconnect itself happens locally in dispose() - so leaving must not
-  /// block on it, or "End Meeting" feels stuck/unresponsive.
   void _leaveMeeting() {
     final isLastParticipant = _room.remoteParticipants.isEmpty;
 
-    // Only interrupt with a confirmation when leaving actually ends the
-    // recording for everyone (i.e. you're the last one here). If others are
-    // still in the room, leaving is low-stakes - just go.
-    if (!isLastParticipant) {
-      _performLeave(stopRecording: false);
-      return;
-    }
-
-    showDialog(
-      context: context,
-      builder: (dialogCtx) => AlertDialog(
-        title: const Text('Leave and end recording?'),
-        content: const Text(
-          "You're the last person here. Leaving stops the recording and starts "
-          'generating the AI summary.',
+    if (isLastParticipant) {
+      showDialog(
+        context: context,
+        builder: (dialogCtx) => AlertDialog(
+          title: const Text('End Meeting?'),
+          content: const Text(
+            "You're the last person here. Ending the meeting stops the recording and starts generating the AI summary.",
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(),
+              child: const Text('Stay'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+              onPressed: () {
+                Navigator.of(dialogCtx).pop();
+                _performLeave(action: _LeaveAction.endEgress);
+              },
+              child: const Text('End Meeting'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogCtx).pop(),
-            child: const Text('Stay'),
+      );
+    } else {
+      showDialog(
+        context: context,
+        builder: (dialogCtx) => AlertDialog(
+          title: const Text('Leave or End Meeting?'),
+          content: const Text(
+            "You can leave the meeting quietly, or end it for everyone. Ending the meeting kicks all participants and starts generating the AI summary.",
           ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-            onPressed: () {
-              Navigator.of(dialogCtx).pop();
-              _performLeave(stopRecording: true);
-            },
-            child: const Text('Leave'),
-          ),
-        ],
-      ),
-    );
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogCtx).pop(),
+              child: const Text('Stay'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.grey.shade700, foregroundColor: Colors.white),
+              onPressed: () {
+                Navigator.of(dialogCtx).pop();
+                _performLeave(action: _LeaveAction.leave);
+              },
+              child: const Text('Leave'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+              onPressed: () {
+                Navigator.of(dialogCtx).pop();
+                _performLeave(action: _LeaveAction.endForAll);
+              },
+              child: const Text('End for All'),
+            ),
+          ],
+        ),
+      );
+    }
   }
 
-  void _performLeave({required bool stopRecording}) {
-    if (stopRecording) {
+  void _performLeave({required _LeaveAction action}) {
+    if (action == _LeaveAction.endEgress) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Meeting ended. AI summary is generating in the background...'),
@@ -375,6 +394,14 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
         ),
       );
       _stopEgressInBackground();
+    } else if (action == _LeaveAction.endForAll) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Ending meeting for everyone. AI summary is generating...'),
+          duration: Duration(seconds: 4),
+        ),
+      );
+      _endMeetingRoomInBackground();
     }
 
     // Someone who opened a direct meeting link has no back-stack to pop to,
@@ -417,6 +444,16 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
     }
   }
 
+  Future<void> _endMeetingRoomInBackground() async {
+    try {
+      await FirebaseFunctions.instanceFor(region: 'asia-south1').httpsCallable('endMeetingRoom').call({
+        'meetingId': widget.meetingId,
+      });
+    } catch (e) {
+      debugPrint("Failed to end meeting room: $e");
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isConnecting) {
@@ -432,7 +469,13 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
       );
     }
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _leaveMeeting();
+      },
+      child: Scaffold(
       appBar: AppBar(
         // Leaving happens only through the deliberate Leave button in the
         // control bar (which handles egress/confirmation), so suppress the
@@ -553,10 +596,11 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
                 ),
             ],
           );
-        }
+        },
       ),
-    );
-  }
+    ),
+  );
+}
 
   /// Compact floating control bar: only the essentials (mic, camera, share,
   /// More, Leave). Everything secondary - chat, participants, reactions,
@@ -996,6 +1040,30 @@ class _LiveMeetingScreenState extends State<LiveMeetingScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // Co-Located / Shared Mic button
+        Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          child: OutlinedButton.icon(
+            onPressed: () {
+              CoLocatedParticipantsSheet.show(
+                context: context,
+                meetingId: widget.meetingId,
+                groupId: widget.groupId,
+              );
+            },
+            icon: const Icon(Icons.group_add_rounded, size: 18, color: Colors.blueAccent),
+            label: const Text(
+              '+ Person in my room (Shared Mic)',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+            ),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+              side: BorderSide(color: Colors.blueAccent.withValues(alpha: 0.5)),
+              backgroundColor: Colors.blueAccent.withValues(alpha: 0.12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ),
         if (_raisedHandQueue.isNotEmpty) ...[
           Container(
             padding: const EdgeInsets.all(12),

@@ -221,7 +221,7 @@ class _SearchDiscoveryScreenState extends ConsumerState<SearchDiscoveryScreen> {
         scrolledUnderElevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
-          onPressed: () => Navigator.of(context).maybePop(),
+          onPressed: () => context.canPop() ? context.pop() : context.go('/upcoming'),
         ),
         title: Text(
           'Search & Discovery',

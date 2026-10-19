@@ -129,7 +129,7 @@ class _PersonalTasksInsightsScreenState
         elevation: 0,
         leading: IconButton(
           icon: Icon(Icons.arrow_back_rounded, color: context.colors.textMain),
-          onPressed: () => context.pop(),
+          onPressed: () => context.canPop() ? context.pop() : context.go('/upcoming'),
         ),
         title: Text(
           'Tasks & Productivity',

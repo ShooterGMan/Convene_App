@@ -126,7 +126,12 @@ export const saveVoiceprint = functions.region("asia-south1").runWith({ secrets:
 
   const db = admin.firestore();
   await db.collection("users").doc(userId).set(
-    { hasVoiceprint: true, voiceprintUpdatedAt: admin.firestore.FieldValue.serverTimestamp() },
+    {
+      hasVoiceprint: true,
+      voiceprintUpdatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      geminiVoiceprintUri: admin.firestore.FieldValue.delete(),
+      geminiVoiceprintExpiresAt: admin.firestore.FieldValue.delete(),
+    },
     { merge: true }
   );
 

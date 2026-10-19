@@ -6,7 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// Project Settings → Cloud Messaging → "Web Push certificates" → Key pair,
 /// and paste the key string here. Until it's set, web push is skipped
 /// (Android push still works without it). This value is public/not secret.
-const String kWebPushVapidKey = '';
+const String kWebPushVapidKey = 'BEgxSsLl7L6qryk3X7H7tPSIE5ipU294hPsvEf0xApJuwR4r5lFYabse3BzDhb-WfJpZnCDSKCJOTGJesmOd8Hg';
 
 /// Registers this device for push notifications and keeps its FCM token stored
 /// on the user's Firestore doc (in `fcmTokens`). The actual pushes are sent

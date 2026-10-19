@@ -20,6 +20,7 @@ class Meeting {
   final String? summaryError; // non-null if summary generation failed/timed out
   final List<String> guestEmails;
   final bool isImportant;
+  final bool isStarred;
   final bool isInstant;
   final Map<String, String> rsvps; // uid -> 'yes' | 'no' | 'maybe'
   final List<String> agenda; // Pre-meeting discussion topics
@@ -40,6 +41,7 @@ class Meeting {
     this.summaryError,
     this.guestEmails = const [],
     this.isImportant = false,
+    this.isStarred = false,
     this.isInstant = false,
     this.rsvps = const {},
     this.agenda = const [],
@@ -78,6 +80,7 @@ class Meeting {
               .toList() ??
           [],
       isImportant: json['isImportant'] as bool? ?? false,
+      isStarred: json['isStarred'] as bool? ?? false,
       isInstant: json['isInstant'] as bool? ?? false,
       rsvps: (json['rsvps'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
       agenda: (json['agenda'] as List<dynamic>?)?.map((e) => e as String).toList() ?? [],
@@ -103,6 +106,7 @@ class Meeting {
       'summaryStatus': summaryStatus,
       'guestEmails': guestEmails,
       'isImportant': isImportant,
+      'isStarred': isStarred,
       'isInstant': isInstant,
       'rsvps': rsvps,
       'agenda': agenda,
@@ -125,6 +129,7 @@ class Meeting {
     String? summaryError,
     List<String>? guestEmails,
     bool? isImportant,
+    bool? isStarred,
     bool? isInstant,
     Map<String, String>? rsvps,
     List<String>? agenda,
@@ -145,6 +150,7 @@ class Meeting {
       summaryError: summaryError ?? this.summaryError,
       guestEmails: guestEmails ?? this.guestEmails,
       isImportant: isImportant ?? this.isImportant,
+      isStarred: isStarred ?? this.isStarred,
       isInstant: isInstant ?? this.isInstant,
       rsvps: rsvps ?? this.rsvps,
       agenda: agenda ?? this.agenda,

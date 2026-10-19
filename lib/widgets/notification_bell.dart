@@ -477,19 +477,26 @@ class _NotificationCard extends ConsumerWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Row(
-                      children: [
-                        Icon(Icons.history_toggle_off_rounded, size: 14, color: context.colors.textMuted),
-                        const SizedBox(width: 4),
-                        Text(
-                          'Invite expired · Meeting ended',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: context.colors.textMuted,
+                    Expanded(
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(Icons.history_toggle_off_rounded, size: 14, color: context.colors.textMuted),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              'Invite expired · Meeting ended',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: context.colors.textMuted,
+                              ),
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
                     if (meeting?.threadId != null)
                       TextButton.icon(
@@ -508,38 +515,41 @@ class _NotificationCard extends ConsumerWidget {
                 )
               else
                 // When meeting is upcoming/live: show Active Quick RSVP options
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
-                  children: [
-                    Text(
-                      'Quick RSVP: ',
-                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: context.colors.textMuted),
-                    ),
-                    const SizedBox(width: 6),
-                    _buildRsvpChip(
-                      context,
-                      label: 'Going',
-                      icon: Icons.check,
-                      color: const Color(0xFF10B981),
-                      onTap: () => _respondMeetingRsvp(context, ref, RsvpStatus.yes),
-                    ),
-                    const SizedBox(width: 6),
-                    _buildRsvpChip(
-                      context,
-                      label: 'Maybe',
-                      icon: Icons.help_outline,
-                      color: const Color(0xFFF59E0B),
-                      onTap: () => _respondMeetingRsvp(context, ref, RsvpStatus.maybe),
-                    ),
-                    const SizedBox(width: 6),
-                    _buildRsvpChip(
-                      context,
-                      label: 'Decline',
-                      icon: Icons.close,
-                      color: Colors.redAccent,
-                      onTap: () => _respondMeetingRsvp(context, ref, RsvpStatus.no),
-                    ),
-                  ],
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        'Quick RSVP: ',
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: context.colors.textMuted),
+                      ),
+                      const SizedBox(width: 6),
+                      _buildRsvpChip(
+                        context,
+                        label: 'Going',
+                        icon: Icons.check,
+                        color: const Color(0xFF10B981),
+                        onTap: () => _respondMeetingRsvp(context, ref, RsvpStatus.yes),
+                      ),
+                      const SizedBox(width: 6),
+                      _buildRsvpChip(
+                        context,
+                        label: 'Maybe',
+                        icon: Icons.help_outline,
+                        color: const Color(0xFFF59E0B),
+                        onTap: () => _respondMeetingRsvp(context, ref, RsvpStatus.maybe),
+                      ),
+                      const SizedBox(width: 6),
+                      _buildRsvpChip(
+                        context,
+                        label: 'Decline',
+                        icon: Icons.close,
+                        color: Colors.redAccent,
+                        onTap: () => _respondMeetingRsvp(context, ref, RsvpStatus.no),
+                      ),
+                    ],
+                  ),
                 ),
             ],
 

@@ -21,6 +21,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   bool _isLogin = true;
   bool _isLoading = false;
+  bool _obscurePassword = true;
   String? _errorMessage;
 
   @override
@@ -259,7 +260,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 // Password Field
                 TextField(
                   controller: _passwordController,
-                  obscureText: true,
+                  obscureText: _obscurePassword,
                   style: TextStyle(color: context.colors.textMain),
                   decoration: InputDecoration(
                     labelText: 'Password',
@@ -271,6 +272,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       borderSide: BorderSide.none,
                     ),
                     prefixIcon: Icon(Icons.lock_outline, color: context.colors.textLight),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                        color: context.colors.textLight,
+                        size: 20,
+                      ),
+                      onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                    ),
                   ),
                 ).animate().fadeIn(delay: 600.ms).slideY(begin: 0.1, end: 0),
                 if (_isLogin)

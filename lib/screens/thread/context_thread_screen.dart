@@ -10,6 +10,7 @@ import 'package:intl/intl.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:go_router/go_router.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/data_providers.dart';
 import '../../repositories/firestore_repository.dart';
@@ -41,7 +42,7 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
   final ScrollController _scrollController = ScrollController();
 
   // Category filter state
-  String _selectedCategory = 'All';
+  String _selectedCategory = 'Summary';
 
   List<SmartBlock> get _filteredBlocks {
     final myName = ref.read(appUserProvider).name.toLowerCase();
@@ -1001,7 +1002,7 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
         appBar: AppBar(
           leading: IconButton(
             icon: Icon(Icons.arrow_back_ios_new_rounded),
-            onPressed: () => Navigator.of(context).maybePop(),
+            onPressed: () => context.canPop() ? context.pop() : context.go('/upcoming'),
           ),
         ),
         body: Center(child: Text(_error ?? "Failed to load thread", style: TextStyle(color: context.colors.textMain))),
@@ -1022,7 +1023,7 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
               scrolledUnderElevation: 0,
               leading: IconButton(
                 icon: Icon(Icons.arrow_back_ios_new_rounded, size: 20),
-                onPressed: () => Navigator.of(context).maybePop(),
+                onPressed: () => context.canPop() ? context.pop() : context.go('/upcoming'),
               ),
               title: Text(
                 _thread!.meetingTitle,
@@ -1324,7 +1325,7 @@ class _ContextThreadScreenState extends ConsumerState<ContextThreadScreen> {
   }
 
   Widget _buildFilterChips() {
-    final categories = ['All', 'My Tasks', 'Action Items', 'Decisions', 'Summary', 'Insights'];
+    final categories = ['Summary', 'All', 'My Tasks', 'Action Items', 'Decisions', 'Insights'];
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: SingleChildScrollView(

@@ -8,20 +8,24 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:livekit_client/livekit_client.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../../providers/auth_provider.dart';
+import '../../repositories/firestore_repository.dart';
 import '../../theme/app_theme.dart';
 import '../../utils/web_audio_analyser.dart';
 import '../../widgets/recording_consent.dart';
+import '../../models/meeting.dart';
 
 class PreJoinScreen extends ConsumerStatefulWidget {
   final String meetingId;
   final String groupId;
   final String title;
+  final bool isNewInstantMeeting;
 
   const PreJoinScreen({
     super.key,
     required this.meetingId,
     required this.groupId,
     required this.title,
+    this.isNewInstantMeeting = false,
   });
 
   @override
@@ -181,7 +185,35 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
     super.dispose();
   }
 
-  void _joinMeeting() {
+  bool _isCreating = false;
+
+  Future<void> _joinMeeting() async {
+    if (widget.isNewInstantMeeting) {
+      setState(() => _isCreating = true);
+      final user = ref.read(appUserProvider);
+      final now = DateTime.now();
+      final meeting = Meeting(
+        id: widget.meetingId,
+        title: widget.title,
+        startTime: now,
+        endTime: now.add(const Duration(hours: 1)),
+        type: MeetingType.meet,
+        participants: [user],
+        isInstant: true,
+      );
+      try {
+        await ref.read(firestoreRepositoryProvider).createMeeting(meeting).timeout(const Duration(seconds: 10));
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not create meeting: $e')));
+          setState(() => _isCreating = false);
+        }
+        return;
+      }
+    }
+
+    if (!mounted) return;
+
     context.pushReplacement(
       '/live/${widget.meetingId}',
       extra: {
@@ -206,6 +238,10 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
       appBar: AppBar(
         backgroundColor: context.colors.background,
         elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_ios_new_rounded, size: 20, color: context.colors.textMain),
+          onPressed: () => context.canPop() ? context.pop() : context.go('/upcoming'),
+        ),
         title: Text(
           _isTestMode ? 'Test Devices' : 'Ready to join?',
           style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, color: context.colors.textMain),
@@ -246,9 +282,12 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
                   const SizedBox(height: 20),
                 ],
 
-                // Primary action — the visual focus of the screen.
                 ElevatedButton(
-                  onPressed: _isTestMode ? () => Navigator.of(context).pop() : (_canJoin ? _joinMeeting : null),
+                  onPressed: _isCreating
+                      ? null
+                      : (_isTestMode
+                          ? () => Navigator.of(context).pop()
+                          : (_canJoin ? _joinMeeting : null)),
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 18),
                     backgroundColor: context.colors.primary,
@@ -257,10 +296,12 @@ class _PreJoinScreenState extends ConsumerState<PreJoinScreen> {
                     elevation: 0,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.full)),
                   ),
-                  child: Text(
-                    _isTestMode ? 'Done Testing' : (_canJoin ? 'Join now' : 'Enter your name to join'),
-                    style: GoogleFonts.plusJakartaSans(fontSize: 18, fontWeight: FontWeight.w800),
-                  ),
+                  child: _isCreating
+                      ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                      : Text(
+                          _isTestMode ? 'Done Testing' : (_canJoin ? 'Join now' : 'Enter your name to join'),
+                          style: GoogleFonts.plusJakartaSans(fontSize: 18, fontWeight: FontWeight.w800),
+                        ),
                 ),
                 const SizedBox(height: 12),
 

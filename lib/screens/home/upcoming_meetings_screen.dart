@@ -5,12 +5,16 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:go_router/go_router.dart';
-
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'package:flutter_speed_dial/flutter_speed_dial.dart';
+import 'package:table_calendar/table_calendar.dart';
+
 import '../../providers/auth_provider.dart';
 import '../../providers/data_providers.dart';
 
 import '../../models/context_thread.dart';
+import '../../models/external_calendar_event.dart';
 import '../../models/group.dart';
 import '../../models/group_invite.dart';
 import '../../models/meeting.dart';
@@ -48,7 +52,9 @@ class UpcomingMeetingsScreen extends ConsumerStatefulWidget {
 }
 
 class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen> {
-  DateTime? _selectedDate; // top date picker filter
+  DateTime _focusedDay = DateTime.now();
+  DateTime? _selectedDay = DateTime.now();
+  CalendarFormat _calendarFormat = CalendarFormat.week;
   bool _allMeetingsExpanded = false;
 
   // Filters only apply inside the "All meetings" disclosure, keeping the main
@@ -56,11 +62,6 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
   _TypeFilter _typeFilter = _TypeFilter.all;
   String? _groupFilterId;
   bool _pastExpanded = false;
-
-  DateTime get _today {
-    final now = DateTime.now();
-    return DateTime(now.year, now.month, now.day);
-  }
 
   bool _isSameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
 
@@ -81,9 +82,11 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
     final groups = groupsAsync.maybeWhen(data: (g) => g, orElse: () => const <Group>[]);
     final threads = threadsAsync.maybeWhen(data: (t) => t, orElse: () => const <ContextThread>[]);
     final invites = invitesAsync.maybeWhen(data: (i) => i, orElse: () => const <GroupInvite>[]);
+    final externalEventsAsync = ref.watch(externalCalendarEventsProvider);
 
     return Scaffold(
       backgroundColor: context.colors.background,
+      floatingActionButton: _buildFab(context),
       body: SafeArea(
         bottom: false,
         child: RefreshIndicator(
@@ -92,6 +95,7 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
             ref.invalidate(meetingsProvider);
             ref.invalidate(threadsProvider);
             ref.invalidate(pendingInvitesProvider);
+            ref.invalidate(externalCalendarEventsProvider);
             await Future.delayed(const Duration(milliseconds: 400));
           },
           child: CustomScrollView(
@@ -104,21 +108,14 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       _buildHeader(context, selfUser.name),
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          _buildTopCalendarPicker(context),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      _buildPrimaryActions(context),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 24),
+                      _buildTopCalendar(context, meetingsAsync, externalEventsAsync),
+                      const SizedBox(height: 24),
                       const LiveSoonBanner(),
                       const SizedBox(height: 16),
-                      _buildNextUp(context, meetingsAsync),
+                      _buildNextUp(context, meetingsAsync, externalEventsAsync),
                       _buildNeedsAttention(context, invites, threads, selfUser.name),
                       _buildMyActionItemsWidget(context, threads, selfUser.name),
-                      _buildRecentTopics(context, threads),
                       const SizedBox(height: 12),
                       _buildAllMeetingsDisclosure(context, meetingsAsync, groups),
                     ],
@@ -132,15 +129,75 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
     );
   }
 
+  Widget _buildFab(BuildContext context) {
+    return SpeedDial(
+      icon: Icons.add_rounded,
+      activeIcon: Icons.close_rounded,
+      spacing: 3,
+      childPadding: const EdgeInsets.all(5),
+      spaceBetweenChildren: 4,
+      backgroundColor: context.colors.primary,
+      foregroundColor: Colors.white,
+      elevation: 8.0,
+      animationCurve: Curves.elasticInOut,
+      animationDuration: const Duration(milliseconds: 300),
+      children: [
+        SpeedDialChild(
+          child: const Icon(Icons.calendar_month_rounded),
+          backgroundColor: context.colors.surface,
+          foregroundColor: context.colors.textMain,
+          label: 'Schedule Meeting',
+          labelStyle: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600, color: context.colors.textMain),
+          onTap: () => _showNewMeetingSheet(context),
+        ),
+        SpeedDialChild(
+          child: const Icon(Icons.videocam_rounded),
+          backgroundColor: context.colors.surface,
+          foregroundColor: context.colors.textMain,
+          label: 'Start Online Now',
+          labelStyle: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600, color: context.colors.textMain),
+          onTap: () => _startInstantMeeting(context),
+        ),
+        SpeedDialChild(
+          child: const Icon(Icons.mic_rounded),
+          backgroundColor: context.colors.surface,
+          foregroundColor: context.colors.textMain,
+          label: 'Start In-Person Now',
+          labelStyle: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600, color: context.colors.textMain),
+          onTap: () => _startInPersonMeeting(context),
+        ),
+        SpeedDialChild(
+          child: const Icon(Icons.link_rounded),
+          backgroundColor: context.colors.surface,
+          foregroundColor: context.colors.textMain,
+          label: 'Join via Link',
+          labelStyle: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w600, color: context.colors.textMain),
+          onTap: () => _showJoinWithLink(context),
+        ),
+      ],
+    );
+  }
+
+  void _startInPersonMeeting(BuildContext context) {
+    _startQuickRecording(context);
+  }
+
+  // Action methods to connect to the existing functionality
+  // _startInstantMeeting and _startInPersonMeeting are defined lower in the file
+
   // ---- Header -------------------------------------------------------------
 
   Widget _buildHeader(BuildContext context, String name) {
+    final trimmedName = name.trim();
+    final firstName = trimmedName.isNotEmpty ? trimmedName.split(' ').first : '';
+    final greetingText = firstName.isNotEmpty ? '${_greeting()}, $firstName' : _greeting();
+
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
           child: Text(
-            '${_greeting()}, ${name.split(' ').first}',
+            greetingText,
             style: GoogleFonts.plusJakartaSans(
               fontSize: 28,
               fontWeight: FontWeight.w700,
@@ -170,194 +227,195 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
     );
   }
 
-  Widget _buildTopCalendarPicker(BuildContext context) {
-    final label = _selectedDate == null
-        ? 'All Meetings'
-        : _isSameDay(_selectedDate!, _today)
-            ? 'Today · ${DateFormat('MMM d').format(_today)}'
-            : DateFormat('EEE, MMM d').format(_selectedDate!);
+  Widget _buildTopCalendar(
+    BuildContext context,
+    AsyncValue<List<Meeting>> meetingsAsync,
+    AsyncValue<List<ExternalCalendarEvent>> externalEventsAsync,
+  ) {
+    // Collect all dates that have meetings/events to show markers
+    final meetingDates = <DateTime>{};
+    meetingsAsync.whenData((meetings) {
+      for (final m in meetings) {
+        meetingDates.add(DateTime(m.startTime.year, m.startTime.month, m.startTime.day));
+      }
+    });
 
-    return GestureDetector(
-      onTap: () async {
-        final picked = await showDatePicker(
-          context: context,
-          initialDate: _selectedDate ?? DateTime.now(),
-          firstDate: DateTime.now().subtract(const Duration(days: 365)),
-          lastDate: DateTime.now().add(const Duration(days: 365)),
-          builder: (context, child) {
-            return Theme(
-              data: Theme.of(context).copyWith(
-                colorScheme: ColorScheme.light(
-                  primary: context.colors.primary,
-                  onPrimary: Colors.white,
-                  surface: context.colors.surface,
-                  onSurface: context.colors.textMain,
-                ),
-              ),
-              child: child!,
+    final externalDates = <DateTime>{};
+    externalEventsAsync.whenData((events) {
+      for (final e in events) {
+        externalDates.add(DateTime(e.startTime.year, e.startTime.month, e.startTime.day));
+      }
+    });
+
+    return Container(
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        boxShadow: AppShadows.card,
+      ),
+      child: TableCalendar(
+        firstDay: DateTime.now().subtract(const Duration(days: 365)),
+        lastDay: DateTime.now().add(const Duration(days: 365)),
+        focusedDay: _focusedDay,
+        selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+        calendarFormat: _calendarFormat,
+        daysOfWeekHeight: 24, // Fixes clipping of MTW headers
+        onFormatChanged: (format) {
+          setState(() {
+            _calendarFormat = format;
+          });
+        },
+        onDaySelected: (selectedDay, focusedDay) {
+          setState(() {
+            _selectedDay = selectedDay;
+            _focusedDay = focusedDay;
+          });
+        },
+        eventLoader: (day) {
+          final justDay = DateTime(day.year, day.month, day.day);
+          final events = [];
+          if (meetingDates.contains(justDay)) events.add('meeting');
+          if (externalDates.contains(justDay)) events.add('external');
+          return events;
+        },
+        calendarBuilders: CalendarBuilders(
+          markerBuilder: (context, day, events) {
+            if (events.isEmpty) return null;
+            return Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: events.map((e) {
+                return Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 1.5, vertical: 6),
+                  width: 5,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: e == 'meeting' ? context.colors.primary : Colors.amber.shade600,
+                  ),
+                );
+              }).toList(),
             );
           },
-        );
-        if (picked != null) {
-          setState(() => _selectedDate = picked);
-        }
-      },
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: context.colors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.full),
-          boxShadow: AppShadows.card,
-          border: Border.all(
-            color: _selectedDate != null ? context.colors.primary.withValues(alpha: 0.5) : context.colors.border,
-            width: 1.5,
+        ),
+        calendarStyle: CalendarStyle(
+          defaultTextStyle: GoogleFonts.plusJakartaSans(color: context.colors.textMain),
+          weekendTextStyle: GoogleFonts.plusJakartaSans(color: context.colors.textMain),
+          outsideTextStyle: GoogleFonts.plusJakartaSans(color: context.colors.textMuted.withValues(alpha: 0.5)),
+          todayTextStyle: GoogleFonts.plusJakartaSans(color: context.colors.textMain, fontWeight: FontWeight.bold),
+          selectedTextStyle: GoogleFonts.plusJakartaSans(color: Colors.white, fontWeight: FontWeight.bold),
+          todayDecoration: BoxDecoration(
+            color: context.colors.primary.withValues(alpha: 0.3),
+            shape: BoxShape.circle,
+          ),
+          selectedDecoration: BoxDecoration(
+            color: context.colors.primary,
+            shape: BoxShape.circle,
+          ),
+          markerDecoration: BoxDecoration(
+            color: context.colors.primary,
+            shape: BoxShape.circle,
           ),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(
-              Icons.calendar_today_rounded,
-              size: 15,
-              color: _selectedDate != null ? context.colors.primary : context.colors.textMuted,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: GoogleFonts.plusJakartaSans(
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-                color: _selectedDate != null ? context.colors.primary : context.colors.textMain,
-              ),
-            ),
-            const SizedBox(width: 4),
-            Icon(
-              Icons.keyboard_arrow_down_rounded,
-              size: 18,
-              color: _selectedDate != null ? context.colors.primary : context.colors.textMuted,
-            ),
-            if (_selectedDate != null) ...[
-              const SizedBox(width: 6),
-              GestureDetector(
-                onTap: () => setState(() => _selectedDate = null),
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: BoxDecoration(
-                    color: context.colors.textMuted.withValues(alpha: 0.15),
-                    shape: BoxShape.circle,
+        daysOfWeekStyle: DaysOfWeekStyle(
+          weekdayStyle: GoogleFonts.plusJakartaSans(color: context.colors.textMuted, fontSize: 13, fontWeight: FontWeight.w600),
+          weekendStyle: GoogleFonts.plusJakartaSans(color: context.colors.textMuted, fontSize: 13, fontWeight: FontWeight.w600),
+        ),
+        headerStyle: HeaderStyle(
+          formatButtonVisible: false,
+          titleCentered: true,
+          titleTextStyle: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, fontSize: 16, color: context.colors.textMain),
+          leftChevronIcon: Icon(Icons.chevron_left_rounded, color: context.colors.textMain),
+          rightChevronIcon: Icon(Icons.chevron_right_rounded, color: context.colors.textMain),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNextUp(
+    BuildContext context,
+    AsyncValue<List<Meeting>> meetingsAsync,
+    AsyncValue<List<ExternalCalendarEvent>> externalEventsAsync,
+  ) {
+    if (_selectedDay == null) return const SizedBox.shrink();
+
+    final day = _selectedDay!;
+    final List<dynamic> combinedList = [];
+
+    meetingsAsync.whenData((meetings) {
+      combinedList.addAll(meetings.where((m) => _isSameDay(m.startTime, day)));
+    });
+    externalEventsAsync.whenData((events) {
+      combinedList.addAll(events.where((e) => _isSameDay(e.startTime, day)));
+    });
+
+    // Sort chronologically
+    combinedList.sort((a, b) => (a.startTime as DateTime).compareTo(b.startTime as DateTime));
+
+    return _sectionShell(
+      context,
+      title: DateFormat('EEEE, MMM d').format(day),
+      child: combinedList.isEmpty
+          ? _buildNextUpEmpty(context)
+          : Column(
+              children: [
+                for (final item in combinedList)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: item is Meeting
+                        ? Opacity(opacity: item.isPast ? 0.6 : 1.0, child: MeetingCard(meeting: item))
+                        : _buildExternalEventCard(context, item),
                   ),
-                  child: Icon(Icons.close_rounded, size: 12, color: context.colors.textMuted),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildExternalEventCard(BuildContext context, ExternalCalendarEvent event) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: context.colors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: context.colors.border, width: 1),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 4,
+            height: 40,
+            decoration: BoxDecoration(
+              color: context.colors.textMuted.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  event.title,
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: context.colors.textMain,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ---- Primary actions ----------------------------------------------------
-
-  Widget _buildPrimaryActions(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          flex: 3,
-          child: ElevatedButton.icon(
-            onPressed: () => _showNewMeetingSheet(context),
-            icon: const Icon(Icons.add_rounded, size: 22),
-            label: Text(
-              'New meeting',
-              style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w800, fontSize: 15),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: context.colors.primary,
-              foregroundColor: Colors.white,
-              elevation: 0,
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.full)),
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          flex: 2,
-          child: OutlinedButton.icon(
-            onPressed: () => _showJoinWithLink(context),
-            icon: const Icon(Icons.link_rounded, size: 20),
-            label: Text(
-              'Join link',
-              style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.w700, fontSize: 14),
-            ),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: context.colors.primary,
-              side: BorderSide(color: context.colors.primary.withValues(alpha: 0.5)),
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.full)),
-            ),
-          ),
-        ),
-      ],
-    ).animate().fadeIn(delay: 100.ms, duration: 400.ms);
-  }
-
-
-
-  // ---- Next up ------------------------------------------------------------
-
-  Widget _buildNextUp(BuildContext context, AsyncValue<List<Meeting>> meetingsAsync) {
-    return meetingsAsync.when(
-      loading: () => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        child: Center(child: CircularProgressIndicator(color: context.colors.primary)),
-      ),
-      error: (e, _) => _sectionShell(
-        context,
-        title: 'Next up',
-        child: Text('Couldn\'t load meetings: $e', style: TextStyle(color: context.colors.textMuted)),
-      ),
-      data: (all) {
-        // With a day selected in the strip/calendar, show that day; otherwise
-        // surface the single soonest upcoming meeting.
-        if (_selectedDate != null) {
-          final dayMeetings = all.where((m) => _isSameDay(m.startTime, _selectedDate!)).toList()
-            ..sort((a, b) => a.startTime.compareTo(b.startTime));
-          return _sectionShell(
-            context,
-            title: DateFormat('EEEE, MMM d').format(_selectedDate!),
-            action: _clearDayAction(context),
-            child: dayMeetings.isEmpty
-                ? _emptyHint(context, 'No meetings on this day.')
-                : Column(
-                    children: [
-                      for (final m in dayMeetings)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Opacity(opacity: m.isPast ? 0.6 : 1.0, child: MeetingCard(meeting: m)),
-                        ),
-                    ],
+                const SizedBox(height: 4),
+                Text(
+                  '${DateFormat.jm().format(event.startTime)} - ${DateFormat.jm().format(event.endTime)} · Google Calendar',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 13,
+                    color: context.colors.textMuted,
                   ),
-          );
-        }
-
-        final upcoming = all.where((m) => !m.isPast).toList()..sort((a, b) => a.startTime.compareTo(b.startTime));
-        return _sectionShell(
-          context,
-          title: 'Next up',
-          child: upcoming.isEmpty
-              ? _buildNextUpEmpty(context)
-              : MeetingCard(meeting: upcoming.first),
-        );
-      },
-    );
-  }
-
-  Widget _clearDayAction(BuildContext context) {
-    return GestureDetector(
-      onTap: () => setState(() => _selectedDate = null),
-      child: Text(
-        'Clear',
-        style: GoogleFonts.plusJakartaSans(fontSize: 13, fontWeight: FontWeight.w700, color: context.colors.primary),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -384,13 +442,6 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
             'Start a meeting now or schedule your next one.',
             textAlign: TextAlign.center,
             style: GoogleFonts.plusJakartaSans(fontSize: 13, color: context.colors.textMuted, height: 1.4),
-          ),
-          const SizedBox(height: 16),
-          TextButton.icon(
-            onPressed: () => _showNewMeetingSheet(context),
-            icon: const Icon(Icons.add_rounded, size: 18),
-            label: const Text('New meeting'),
-            style: TextButton.styleFrom(foregroundColor: context.colors.primary),
           ),
         ],
       ),
@@ -528,37 +579,6 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
       ),
     );
   }
-
-  // ---- Recent topics ------------------------------------------------------
-
-  Widget _buildRecentTopics(BuildContext context, List<ContextThread> threads) {
-    if (threads.isEmpty) return const SizedBox.shrink();
-    final recent = List<ContextThread>.from(threads)..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    final show = recent.take(4).toList();
-
-    return _sectionShell(
-      context,
-      title: 'Recent topics',
-      action: GestureDetector(
-        onTap: () => context.go('/threads'),
-        child: Text(
-          'See all',
-          style: GoogleFonts.plusJakartaSans(fontSize: 13, fontWeight: FontWeight.w700, color: context.colors.primary),
-        ),
-      ),
-      child: Column(
-        children: [
-          for (final t in show)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: _RecentTopicCard(thread: t),
-            ),
-        ],
-      ),
-    );
-  }
-
-
 
   // ---- All meetings disclosure (past + filters) ---------------------------
 
@@ -962,43 +982,112 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
     }
   }
 
-  Future<void> _startInstantMeeting(BuildContext context) async {
+  void _startInstantMeeting(BuildContext context) async {
     final user = ref.read(appUserProvider);
-    final meetingId = _newMeetingId('meet');
-    // Create a real meeting doc up front (title, type, creator) so an instant
-    // meeting is first-class like a scheduled one - a shared link always
-    // points at a real meeting, and the AI summary has proper participant
-    // data instead of a bare doc the join call scrapes together.
-    final now = DateTime.now();
-    final meeting = Meeting(
-      id: meetingId,
-      title: '${user.name.split(' ').first}\'s Meeting',
-      startTime: now,
-      endTime: now.add(const Duration(hours: 1)),
-      type: MeetingType.meet,
-      participants: [user],
-      isInstant: true,
-    );
-    try {
-      await ref.read(firestoreRepositoryProvider).createMeeting(meeting).timeout(const Duration(seconds: 10));
-    } catch (e) {
-      // Joining an unknown meeting is intentionally rejected by the server,
-      // so never navigate into a room that failed to be created.
-      debugPrint('Failed to create instant meeting doc: $e');
+    final meetingsAsync = ref.read(meetingsProvider);
+    final meetings = meetingsAsync.value ?? [];
+
+    // Check if user already has an active online meeting
+    final activeInstantMeeting = meetings.where((m) {
+      if (!m.isInstant || m.isPast || m.type != MeetingType.meet) return false;
+      return m.participants.isNotEmpty && m.participants.first.id == user.id;
+    }).firstOrNull;
+
+    if (activeInstantMeeting != null) {
       if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not start meeting: $e')),
+        final shouldJoin = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            backgroundColor: context.colors.surface,
+            title: Text('Ongoing Meeting', style: GoogleFonts.plusJakartaSans(color: context.colors.textMain, fontWeight: FontWeight.bold)),
+            content: Text('You already have an ongoing meeting "${activeInstantMeeting.title}". Do you want to join it or start a new one?', style: GoogleFonts.plusJakartaSans(color: context.colors.textMuted)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: Text('Start New', style: GoogleFonts.plusJakartaSans(color: context.colors.textMuted, fontWeight: FontWeight.w600)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: context.colors.primary, foregroundColor: Colors.white, elevation: 0),
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: Text('Join Ongoing', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
         );
+
+        if (shouldJoin == true) {
+          if (context.mounted) {
+            context.push('/pre-join/${activeInstantMeeting.id}', extra: {'title': activeInstantMeeting.title});
+          }
+          return;
+        } else if (shouldJoin == null) {
+          // User tapped outside to dismiss
+          return;
+        }
+        // If false, continue to start new meeting below
       }
-      return;
     }
+
+    final meetingId = _newMeetingId('meet');
     if (context.mounted) {
-      context.push('/pre-join/$meetingId', extra: {'title': meeting.title});
+      final trimmedUserName = user.name.trim();
+      final userFirstName = trimmedUserName.isNotEmpty ? trimmedUserName.split(' ').first : '';
+      final meetingTitle = userFirstName.isNotEmpty ? '$userFirstName\'s Meeting' : 'Quick Meeting';
+      context.push('/pre-join/$meetingId', extra: {
+        'title': meetingTitle,
+        'isNewInstantMeeting': true,
+      });
     }
   }
 
   Future<void> _startQuickRecording(BuildContext context) async {
     final user = ref.read(appUserProvider);
+    final meetingsAsync = ref.read(meetingsProvider);
+    final meetings = meetingsAsync.value ?? [];
+
+    // Check if user already has an active in-person meeting
+    final activeQuickRecording = meetings.where((m) {
+      if (!m.isInstant || m.isPast || m.type != MeetingType.room) return false;
+      return m.participants.isNotEmpty && m.participants.first.id == user.id;
+    }).firstOrNull;
+
+    if (activeQuickRecording != null) {
+      if (context.mounted) {
+        final shouldJoin = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            backgroundColor: context.colors.surface,
+            title: Text('Ongoing Recording', style: GoogleFonts.plusJakartaSans(color: context.colors.textMain, fontWeight: FontWeight.bold)),
+            content: Text('You already have an ongoing recording "${activeQuickRecording.title}". Do you want to jump back in or start a new one?', style: GoogleFonts.plusJakartaSans(color: context.colors.textMuted)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: Text('Start New', style: GoogleFonts.plusJakartaSans(color: context.colors.textMuted, fontWeight: FontWeight.w600)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(backgroundColor: context.colors.primary, foregroundColor: Colors.white, elevation: 0),
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: Text('Join Ongoing', style: GoogleFonts.plusJakartaSans(fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+        );
+
+        if (shouldJoin == true) {
+          if (context.mounted) {
+            context.push('/record/${activeQuickRecording.id}', extra: {
+              'title': activeQuickRecording.title,
+              'participants': activeQuickRecording.participants,
+            });
+          }
+          return;
+        } else if (shouldJoin == null) {
+          return;
+        }
+        // If false, continue to start new recording below
+      }
+    }
+
     final now = DateTime.now();
     final meeting = Meeting(
       id: _newMeetingId('audio'),
@@ -1015,7 +1104,7 @@ class _UpcomingMeetingsScreenState extends ConsumerState<UpcomingMeetingsScreen>
       // the document first also gives the resulting summary a real owner.
       await ref.read(firestoreRepositoryProvider).createMeeting(meeting).timeout(const Duration(seconds: 10));
       if (context.mounted) {
-        context.push('/recording/${meeting.id}', extra: {
+        context.push('/record/${meeting.id}', extra: {
           'title': meeting.title,
           'participants': meeting.participants,
         });
@@ -1103,69 +1192,3 @@ class _AttentionTile extends StatelessWidget {
 }
 
 /// Compact topic (thread) card for the dashboard's "Recent topics" list.
-class _RecentTopicCard extends ConsumerWidget {
-  final ContextThread thread;
-
-  const _RecentTopicCard({required this.thread});
-
-  String _relativeTime(DateTime dateTime) {
-    final diff = DateTime.now().difference(dateTime);
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays == 1) return 'Yesterday';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-    final weeks = (diff.inDays / 7).floor();
-    if (weeks < 5) return '${weeks}w ago';
-    final months = (diff.inDays / 30).floor();
-    return '${months}mo ago';
-  }
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final preview = thread.blocks.isNotEmpty ? thread.blocks.first.content : null;
-
-    return GestureDetector(
-      onTap: () => context.push('/thread/${thread.id}'),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: context.colors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.md),
-          boxShadow: AppShadows.card,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    thread.meetingTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.plusJakartaSans(fontSize: 15, fontWeight: FontWeight.w700, color: context.colors.textMain),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  _relativeTime(thread.createdAt),
-                  style: GoogleFonts.plusJakartaSans(fontSize: 12, fontWeight: FontWeight.w500, color: context.colors.textMuted),
-                ),
-              ],
-            ),
-            if (preview != null) ...[
-              const SizedBox(height: 6),
-              Text(
-                preview,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.plusJakartaSans(fontSize: 13, color: context.colors.textMuted, height: 1.4),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}

@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/external_calendar_event.dart';
 import '../models/meeting.dart';
 import '../repositories/auth_repository.dart';
 import '../theme/app_theme.dart';
@@ -17,6 +18,40 @@ class CalendarService {
   final AuthRepository _authRepository;
 
   CalendarService(this._authRepository);
+
+  Future<List<ExternalCalendarEvent>> fetchExternalEvents(DateTime start, DateTime end) async {
+    try {
+      final token = await _authRepository.getGoogleAccessToken();
+      if (token == null) return [];
+
+      final url = Uri.parse(
+        'https://www.googleapis.com/calendar/v3/calendars/primary/events'
+        '?timeMin=${start.toUtc().toIso8601String()}'
+        '&timeMax=${end.toUtc().toIso8601String()}'
+        '&singleEvents=true'
+        '&orderBy=startTime',
+      );
+
+      final response = await http.get(
+        url,
+        headers: {
+          'Authorization': 'Bearer $token',
+          'Accept': 'application/json',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final items = data['items'] as List<dynamic>? ?? [];
+        return items.map((e) => ExternalCalendarEvent.fromJson(e as Map<String, dynamic>)).toList();
+      }
+      debugPrint('Failed to fetch calendar events: ${response.statusCode} ${response.body}');
+      return [];
+    } catch (e) {
+      debugPrint('Error fetching calendar events: $e');
+      return [];
+    }
+  }
 
   /// Generates a standard Google Calendar web URL template (1-click add to Google Calendar)
   static String buildGoogleCalendarTemplateUrl({

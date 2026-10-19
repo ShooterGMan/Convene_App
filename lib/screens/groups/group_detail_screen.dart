@@ -76,7 +76,7 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
         backgroundColor: context.colors.surface,
         leading: IconButton(
           icon: Icon(Icons.arrow_back, color: context.colors.textMain),
-          onPressed: () => Navigator.of(context).pop(),
+          onPressed: () => context.canPop() ? context.pop() : context.go('/groups'),
         ),
         title: Row(
           mainAxisSize: MainAxisSize.min,
@@ -160,8 +160,57 @@ class _GroupDetailScreenState extends ConsumerState<GroupDetailScreen>
       ),
     );
       },
-      loading: () => Scaffold(body: Center(child: CircularProgressIndicator())),
-      error: (e, st) => Scaffold(body: Center(child: Text('Error: $e'))),
+      loading: () => Scaffold(
+        appBar: AppBar(
+          backgroundColor: context.colors.surface,
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: context.colors.textMain),
+            onPressed: () => context.canPop() ? context.pop() : context.go('/groups'),
+          ),
+        ),
+        body: const Center(child: CircularProgressIndicator()),
+      ),
+      error: (e, st) => Scaffold(
+        appBar: AppBar(
+          backgroundColor: context.colors.surface,
+          leading: IconButton(
+            icon: Icon(Icons.arrow_back, color: context.colors.textMain),
+            onPressed: () => context.canPop() ? context.pop() : context.go('/groups'),
+          ),
+          title: const Text('Group'),
+        ),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.error_outline_rounded, size: 48, color: context.colors.error),
+                const SizedBox(height: 12),
+                Text(
+                  'Failed to load group',
+                  style: GoogleFonts.plusJakartaSans(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: context.colors.textMain,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  '$e',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: context.colors.textMuted),
+                ),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: () => context.go('/groups'),
+                  child: const Text('Back to Groups'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

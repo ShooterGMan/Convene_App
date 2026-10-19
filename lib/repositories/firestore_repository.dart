@@ -111,8 +111,16 @@ class FirestoreRepository {
     });
   }
 
+  Future<void> updateMeeting(String meetingId, Map<String, dynamic> data) async {
+    await _firestore.collection('meetings').doc(meetingId).update(data);
+  }
+
   Future<void> setMeetingImportant(String meetingId, bool isImportant) async {
     await _firestore.collection('meetings').doc(meetingId).update({'isImportant': isImportant});
+  }
+
+  Future<void> setMeetingStarred(String meetingId, bool isStarred) async {
+    await _firestore.collection('meetings').doc(meetingId).update({'isStarred': isStarred});
   }
 
   Future<void> setMeetingRsvp(String meetingId, String userId, RsvpStatus status) async {

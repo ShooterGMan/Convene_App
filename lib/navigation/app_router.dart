@@ -174,6 +174,19 @@ final appRouterProvider = Provider<GoRouter>((ref) {
       },
     ),
     GoRoute(
+      path: '/record/:meetingId',
+      builder: (context, state) {
+        final meetingId = state.pathParameters['meetingId']!;
+        final extra = state.extra as Map<String, dynamic>? ?? {};
+        return ActiveRecordingScreen(
+          meetingId: meetingId,
+          meetingTitle: extra['title'] as String? ?? 'In-Person Meeting',
+          participants: extra['participants'] as List<AppUser>? ?? [],
+          groupId: extra['groupId'] as String?,
+        );
+      },
+    ),
+    GoRoute(
       path: '/pre-join/:meetingId',
       parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) {
@@ -183,6 +196,7 @@ final appRouterProvider = Provider<GoRouter>((ref) {
           meetingId: meetingId,
           groupId: extra['groupId'] as String? ?? '',
           title: extra['title'] as String? ?? 'Meeting',
+          isNewInstantMeeting: extra['isNewInstantMeeting'] as bool? ?? false,
         );
       },
     ),

@@ -22,6 +22,14 @@
           }
         },
         {
+          "client_id": "348324056471-c9t3vcpgdfeudoph1mb6hp14ev7cithe.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.convene.convene",
+            "certificate_hash": "8cf3a071dd03e905d1f0e5454492f0d57cf35387"
+          }
+        },
+        {
           "client_id": "348324056471-jhe60lt0lp0p28ikj212j6e106bvjl4n.apps.googleusercontent.com",
           "client_type": 3
         }

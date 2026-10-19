@@ -1,7 +1,7 @@
 name: convene
 description: "Convene — AI-powered meeting summarization for teams"
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.11.4
@@ -32,8 +32,11 @@ dependencies:
   permission_handler: ^11.3.1
   wakelock_plus: ^1.2.8
   audioplayers: ^6.1.0
-  record: ^5.2.0
+  record: any
   qr_flutter: ^4.1.0
+  table_calendar: ^3.2.1
+  flutter_speed_dial: ^7.0.0
+  firebase_storage: ^13.6.0
 
 dev_dependencies:
   flutter_test:
